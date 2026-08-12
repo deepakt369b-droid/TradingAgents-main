@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  tradingagents:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: always
+    # Coolify itself runs on host port 8000, so the app is exposed on 8001.
+    # The container still listens on internal port 8000 (see Dockerfile CMD).
+    ports:
+      - "8001:8000"
+    environment:
+      - PORT=8000
+      - TRADINGAGENTS_LLM_PROVIDER=${TRADINGAGENTS_LLM_PROVIDER:-openai}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:-}
+      - CLOUDFLARE_GATEWAY_ID=${CLOUDFLARE_GATEWAY_ID:-}
+      - CLOUDFLARE_BYOK_ALIAS=${CLOUDFLARE_BYOK_ALIAS:-}
+      - ALPACA_API_KEY=${ALPACA_API_KEY:-}
+      - ALPACA_SECRET_KEY=${ALPACA_SECRET_KEY:-}
+      - CCXT_EXCHANGE=${CCXT_EXCHANGE:-binance}
+      - CCXT_API_KEY=${CCXT_API_KEY:-}
+      - CCXT_SECRET_KEY=${CCXT_SECRET_KEY:-}
+    volumes:
+      - tradingagents_data:/home/appuser/.tradingagents
+      - tradingagents_config:/home/appuser/app/config
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/api/config || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  tradingagents_data:
+  tradingagents_config:

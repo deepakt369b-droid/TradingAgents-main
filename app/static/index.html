@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TradingAgents</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<div id="app">
+  <!-- ========== Header ========== -->
+  <header class="app-header">
+    <div class="brand">
+      <div class="brand-icon">TA</div>
+      <span class="brand-name">TradingAgents</span>
+      <span class="brand-tag">v0.3.0</span>
+    </div>
+    <div class="header-actions">
+      <span id="update-badge" class="hidden"></span>
+    </div>
+  </header>
+
+  <!-- ========== Main Content ========== -->
+  <div class="main-content">
+
+    <!-- ===== View 1: Configuration ===== -->
+    <div id="view-config" class="view config-view active">
+      <div class="config-hero">
+        <h1>TradingAgents</h1>
+        <p>Multi-Agent LLM Financial Trading Framework</p>
+      </div>
+
+      <!-- Ticker & Date -->
+      <div class="glass config-section">
+        <div class="section-title">
+          <span class="step-num">1</span> Market Target
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="ticker">Ticker Symbol</label>
+            <input type="text" id="ticker" placeholder="e.g. AAPL, 0700.HK, BTC-USD" value="SPY" spellcheck="false">
+          </div>
+          <div class="form-group">
+            <label for="analysis-date">Analysis Date</label>
+            <input type="date" id="analysis-date">
+          </div>
+        </div>
+      </div>
+
+      <!-- LLM Provider & Models -->
+      <div class="glass config-section">
+        <div class="section-title">
+          <span class="step-num">2</span> LLM Configuration
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="llm-provider">Provider</label>
+            <select id="llm-provider">
+              <option value="openai">OpenAI</option>
+              <option value="google">Google (Gemini)</option>
+              <option value="anthropic">Anthropic (Claude)</option>
+              <option value="xai">xAI (Grok)</option>
+              <option value="deepseek">DeepSeek</option>
+              <option value="groq">Groq</option>
+              <option value="nvidia">NVIDIA</option>
+              <option value="ollama">Ollama (Local)</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="lm_studio">LM Studio</option>
+              <option value="openai_compatible">OpenAI Compatible</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="api-key">API Key</label>
+            <div class="key-input-wrap">
+              <input type="password" id="api-key" placeholder="Enter your API key">
+              <button class="btn-secondary" id="btn-save-key" style="margin-left: 8px; padding: 4px 12px; font-size: 0.8rem;">Save Key</button>
+              <button class="btn-secondary" id="btn-fetch-models" style="margin-left: 8px; padding: 4px 12px; font-size: 0.8rem;">Validate & Fetch Models</button>
+              <span id="key-status" class="key-status"></span>
+            </div>
+          </div>
+        </div>
+        <div class="form-row hidden" id="base-url-wrap">
+          <div class="form-group" style="flex: 1;">
+            <label for="base-url">Base URL (Endpoint)</label>
+            <input type="text" id="base-url" placeholder="e.g. http://localhost:8000/v1">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="deep-model">Deep Thinking Model</label>
+            <select id="deep-model"></select>
+          </div>
+          <div class="form-group">
+            <label for="quick-model">Quick Thinking Model</label>
+            <select id="quick-model"></select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="output-language">Output Language</label>
+            <select id="output-language">
+              <option value="English">English</option>
+              <option value="Chinese">中文</option>
+              <option value="Japanese">日本語</option>
+              <option value="Korean">한국어</option>
+              <option value="Spanish">Español</option>
+              <option value="French">Français</option>
+              <option value="German">Deutsch</option>
+              <option value="Portuguese">Português</option>
+              <option value="Russian">Русский</option>
+            </select>
+          </div>
+          <div class="form-group" id="thinking-config-wrap">
+            <label for="thinking-config" id="thinking-config-label">Reasoning Effort</label>
+            <select id="thinking-config">
+              <option value="">Default</option>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- Cloudflare Gateway & Brokerage Execution Settings -->
+      <div class="glass config-section">
+        <div class="section-title" style="display: flex; justify-content: space-between; align-items: center;">
+          <span><span class="step-num">3</span> Cloudflare Gateway & Brokerage Settings</span>
+          <button class="btn-secondary" id="btn-save-prod-config" style="padding: 4px 14px; font-size: 0.85rem; background: var(--gradient-primary, linear-gradient(135deg, #6366f1, #8b5cf6)); color: #fff; border: none; border-radius: 6px; cursor: pointer;">Save & Apply Settings</button>
+        </div>
+        
+        <!-- Cloudflare AI Gateway -->
+        <div style="margin-bottom: 16px;">
+          <h4 style="margin: 0 0 10px 0; color: #a78bfa; font-size: 0.95rem;">⚡ Cloudflare AI Gateway (Resilience & BYOK)</h4>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="cf-account-id">Account ID</label>
+              <input type="text" id="cf-account-id" placeholder="Cloudflare Account ID">
+            </div>
+            <div class="form-group">
+              <label for="cf-gateway-id">Gateway ID</label>
+              <input type="text" id="cf-gateway-id" placeholder="AI Gateway Name/ID">
+            </div>
+            <div class="form-group">
+              <label for="cf-byok-alias">BYOK Key Alias</label>
+              <input type="text" id="cf-byok-alias" placeholder="e.g. default">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group" style="flex: 2;">
+              <label for="cf-gateway-url">Gateway Endpoint URL (Optional Override)</label>
+              <input type="text" id="cf-gateway-url" placeholder="https://gateway.ai.cloudflare.com/v1/{account}/{gateway}">
+            </div>
+          </div>
+        </div>
+
+        <!-- Trade Execution Brokerage -->
+        <div>
+          <h4 style="margin: 0 0 10px 0; color: #34d399; font-size: 0.95rem;">📈 Trading Execution Platform</h4>
+          <div class="form-row">
+            <div class="form-group" style="flex: 1;">
+              <label for="exec-platform">Execution Engine</label>
+              <select id="exec-platform">
+                <option value="paper">Paper Trading Sandbox (Safe Local Simulation)</option>
+                <option value="alpaca">Alpaca Markets (US Equities & Options)</option>
+                <option value="ibkr">Interactive Brokers (Global Equities & FX)</option>
+                <option value="ccxt">Crypto Exchange via CCXT (Binance, Coinbase, KuCoin, Bybit)</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Dynamic Platform Fields -->
+          <div id="exec-fields-alpaca" class="form-row hidden" style="margin-top: 10px;">
+            <div class="form-group">
+              <label for="alpaca-api-key">Alpaca API Key</label>
+              <input type="password" id="alpaca-api-key" placeholder="PK...">
+            </div>
+            <div class="form-group">
+              <label for="alpaca-secret-key">Alpaca Secret Key</label>
+              <input type="password" id="alpaca-secret-key" placeholder="Secret Key">
+            </div>
+          </div>
+
+          <div id="exec-fields-ibkr" class="form-row hidden" style="margin-top: 10px;">
+            <div class="form-group">
+              <label for="ibkr-host">TWS Gateway Host</label>
+              <input type="text" id="ibkr-host" value="127.0.0.1" placeholder="127.0.0.1">
+            </div>
+            <div class="form-group">
+              <label for="ibkr-port">TWS Gateway Port</label>
+              <input type="text" id="ibkr-port" value="7497" placeholder="7497">
+            </div>
+          </div>
+
+          <div id="exec-fields-ccxt" class="form-row hidden" style="margin-top: 10px;">
+            <div class="form-group">
+              <label for="ccxt-exchange">Exchange Name</label>
+              <select id="ccxt-exchange">
+                <option value="binance">Binance</option>
+                <option value="coinbase">Coinbase</option>
+                <option value="kucoin">KuCoin</option>
+                <option value="bybit">Bybit</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="ccxt-api-key">CCXT API Key</label>
+              <input type="password" id="ccxt-api-key" placeholder="API Key">
+            </div>
+            <div class="form-group">
+              <label for="ccxt-secret-key">CCXT Secret Key</label>
+              <input type="password" id="ccxt-secret-key" placeholder="Secret Key">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Analysts -->
+      <div class="glass config-section">
+        <div class="section-title">
+          <span class="step-num">4</span> Analyst Team
+        </div>
+        <div class="analyst-grid">
+          <label class="analyst-check selected" data-analyst="market">
+            <input type="checkbox" value="market" checked>
+            <span class="check-icon">✓</span>
+            <div class="analyst-info">
+              <div class="analyst-name">📊 Market Analyst</div>
+              <div class="analyst-desc">Technical indicators & price patterns</div>
+            </div>
+          </label>
+          <label class="analyst-check selected" data-analyst="social">
+            <input type="checkbox" value="social" checked>
+            <span class="check-icon">✓</span>
+            <div class="analyst-info">
+              <div class="analyst-name">💬 Sentiment Analyst</div>
+              <div class="analyst-desc">Social media & community sentiment</div>
+            </div>
+          </label>
+          <label class="analyst-check selected" data-analyst="news">
+            <input type="checkbox" value="news" checked>
+            <span class="check-icon">✓</span>
+            <div class="analyst-info">
+              <div class="analyst-name">📰 News Analyst</div>
+              <div class="analyst-desc">Global news & macro events</div>
+            </div>
+          </label>
+          <label class="analyst-check selected" data-analyst="fundamentals">
+            <input type="checkbox" value="fundamentals" checked>
+            <span class="check-icon">✓</span>
+            <div class="analyst-info">
+              <div class="analyst-name">📈 Fundamentals Analyst</div>
+              <div class="analyst-desc">Financial statements & valuation</div>
+            </div>
+          </label>
+        </div>
+      </div>
+
+      <!-- Research Depth -->
+      <div class="glass config-section">
+        <div class="section-title">
+          <span class="step-num">5</span> Research Depth
+        </div>
+        <div class="depth-options">
+          <div class="depth-option selected" data-depth="1">
+            <div class="depth-label">Shallow</div>
+            <div class="depth-desc">Quick scan, 1 round</div>
+          </div>
+          <div class="depth-option" data-depth="3">
+            <div class="depth-label">Medium</div>
+            <div class="depth-desc">Balanced, 3 rounds</div>
+          </div>
+          <div class="depth-option" data-depth="5">
+            <div class="depth-label">Deep</div>
+            <div class="depth-desc">Thorough, 5 rounds</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- CLI Integrations -->
+      <div class="glass config-section">
+        <div class="section-title" style="display: flex; justify-content: space-between; align-items: center;">
+          <span><span class="step-num">6</span> CLI Integrations (Agent Skills)</span>
+          <button class="btn-secondary" id="btn-detect-clis" style="padding: 4px 12px; font-size: 0.8rem;">Auto-Detect</button>
+        </div>
+        <div class="cli-grid" id="cli-grid">
+          <!-- Will be populated by JS -->
+        </div>
+      </div>
+
+      <!-- Launch -->
+      <div class="launch-wrap">
+        <button class="btn-launch" id="btn-launch">
+          🚀 Launch Analysis
+        </button>
+      </div>
+    </div>
+
+    <!-- ===== View 2: Dashboard ===== -->
+    <div id="view-dashboard" class="view dashboard-view">
+      <!-- Left: Agent Grid + Messages -->
+      <div class="dashboard-left">
+        <div class="glass" style="flex:1; display:flex; flex-direction:column; min-height:0;">
+          <div class="panel-header">
+            <span class="panel-title">Agent Progress</span>
+            <div style="display: flex; gap: 8px;">
+              <button class="btn-secondary hidden" id="btn-edit-config" style="padding: 4px 12px; font-size: 0.8rem;">Edit Config</button>
+              <button class="btn-cancel hidden" id="btn-cancel">Cancel</button>
+            </div>
+          </div>
+          <div class="panel-body" id="agent-grid-body">
+            <div class="agent-grid" id="agent-grid">
+              <!-- Populated by JS -->
+            </div>
+          </div>
+        </div>
+        <div class="glass messages-panel" style="flex:1; display:flex; flex-direction:column;">
+          <div class="panel-header">
+            <span class="panel-title">Messages & Tools</span>
+          </div>
+          <div class="panel-body">
+            <div class="messages-feed" id="messages-feed">
+              <!-- Populated by JS -->
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: Live Report -->
+      <div class="dashboard-right">
+        <div class="glass report-panel" style="flex:1; display:flex; flex-direction:column;">
+          <div class="panel-header">
+            <span class="panel-title">Live Report</span>
+            <span class="text-muted font-mono" id="report-progress" style="font-size:0.72rem;">0 / 0</span>
+          </div>
+          <div class="report-content" id="report-content">
+            <div class="report-placeholder">Waiting for analysis reports...</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Footer stats -->
+      <div class="dashboard-footer">
+        <div class="glass stats-bar" id="stats-bar">
+          <div class="stat-item">Agents: <span class="stat-value" id="stat-agents">0/0</span></div>
+          <div class="stat-separator"></div>
+          <div class="stat-item">LLM: <span class="stat-value" id="stat-llm">0</span></div>
+          <div class="stat-separator"></div>
+          <div class="stat-item">Tools: <span class="stat-value" id="stat-tools">0</span></div>
+          <div class="stat-separator"></div>
+          <div class="stat-item">Tokens: <span class="stat-value" id="stat-tokens">--</span></div>
+          <div class="stat-separator"></div>
+          <div class="stat-item">Reports: <span class="stat-value" id="stat-reports">0/0</span></div>
+          <div class="stat-separator"></div>
+          <div class="stat-item">⏱ <span class="stat-value" id="stat-elapsed">00:00</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== View 3: Results ===== -->
+    <div id="view-results" class="view results-view">
+      <div class="results-header">
+        <h2>✅ Analysis Complete</h2>
+        <p id="results-ticker-date"></p>
+      </div>
+
+      <!-- Decision card -->
+      <div class="glass decision-card" id="decision-card">
+        <div class="decision-action hold" id="decision-action">HOLD</div>
+        <div class="decision-summary" id="decision-summary"></div>
+      </div>
+
+      <!-- Full report sections -->
+      <div id="results-report">
+        <!-- Populated by JS as accordion sections -->
+      </div>
+
+      <!-- Actions -->
+      <div class="results-actions">
+        <button class="btn-secondary" id="btn-save-report">💾 Save Report</button>
+        <button class="btn-launch" id="btn-new-analysis" style="padding:10px 28px; font-size:0.88rem;">🔄 New Analysis</button>
+      </div>
+    </div>
+
+  </div><!-- .main-content -->
+</div><!-- #app -->
+
+<!-- Toast notification container -->
+<div class="toast-container" id="toast-container"></div>
+
+<!-- Vendored markdown renderer -->
+<script src="/static/marked.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
