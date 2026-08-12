@@ -27,6 +27,28 @@
 
 # TradingAgents: Multi-Agents LLM Financial Trading Framework
 
+## ⚡ This Fork — Deployment & Browser API-Key Configuration
+
+This fork adds production deployment support and lets you configure API keys directly in the browser, without relying on Coolify (or any host) environment variables.
+
+### What's new in this fork
+
+- **Browser API-key configuration** — Save LLM API keys directly from the web UI. Keys persist to `config/credentials.json` inside the project (excluded from git via `.gitignore`), so analysis works without setting environment variables on the host.
+- **Headless web server** — The `Dockerfile` now runs a headless FastAPI/uvicorn server on `0.0.0.0:8000` (instead of the desktop launcher), so the app works in a container.
+- **Coolify deployment guide** — See [`docs/Coolify_Deployment_Guide.pdf`](docs/Coolify_Deployment_Guide.pdf) for a step-by-step, image-rich guide to deploying on a self-hosted Coolify instance (Ubuntu VM).
+- **Port mapping for Coolify** — `docker-compose.coolify.yml` maps host port `8001` → container port `8000`, since Coolify itself occupies port `8000`.
+
+### Quick start (browser)
+
+1. Deploy the app (see the [Coolify guide](docs/Coolify_Deployment_Guide.pdf)).
+2. Open the app in your browser (e.g. `http://192.168.0.161:8001`).
+3. In the **LLM Configuration** section, select your provider, enter your API key, and click **Save Key**.
+4. Click **Validate & Fetch Models**, then **Launch Analysis**.
+
+> Keys are stored in plaintext (like `.env`) and are excluded from version control. Protect the volume and VM access.
+
+---
+
 ## News
 - [2026-06] **TradingAgents v0.3.0** released with a verified data-access contract, an expanded provider registry (NVIDIA, Kimi, Groq, Mistral, Bedrock, and any OpenAI-compatible endpoint), FRED and Polymarket data vendors, a current-generation model catalog, and a CI gate. See [CHANGELOG.md](CHANGELOG.md) for the full list.
 - [2026-05] **TradingAgents v0.2.5** released with the grounded Sentiment Analyst, GPT-5.5 etc. model coverage, Qwen/GLM/MiniMax dual-region support, `TRADINGAGENTS_*` env-var configurability with API-key auto-detection, remote Ollama support, non-US alpha benchmarks, and ticker path-traversal hardening.
