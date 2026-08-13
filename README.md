@@ -134,11 +134,11 @@ TradingAgents works with any market Yahoo Finance covers, using the exchange-suf
 
 The project is configured for containerized deployment:
 
-- **`Dockerfile`** — builds a headless FastAPI/uvicorn server on `0.0.0.0:8000`. The builder stage uses **[uv](https://github.com/astral-sh/uv)** (Rust package manager) with the locked `requirements.txt`, which downloads and compiles dependencies **in parallel while streaming progress output** — so Coolify's helper container never mistakes the dependency step for a hang. The builder copies only the dependency manifests (`pyproject.toml`, `README.md`, `requirements.txt`) first, then installs, then copies source **last**, so the dependency layer is cached permanently across builds (`UV_HTTP_TIMEOUT=600` prevents slow-PyPI socket timeouts).
+- **`Dockerfile`** — builds a headless FastAPI/uvicorn server on `0.0.0.0:8000`. The builder stage uses **[uv](https://github.com/astral-sh/uv)** (Rust package manager) with the locked `requirements.txt`, which downloads and compiles dependencies **in parallel while streaming progress output**. To keep the first build fast on slow networks, it uses a single `python:3.12-slim` base image for both stages (uv is installed via a small `pip install uv` wheel, not a separate ~70MB uv base image), omits the `# syntax=docker/dockerfile:1` directive (avoids pulling a 14MB BuildKit frontend), and installs **no `curl`** in the runtime image — the healthcheck uses Python's stdlib `urllib` instead.
 - **`docker-compose.coolify.yml`** — maps host port `8001` → container port `8000` (Coolify itself occupies port 8000), with a `tradingagents_config` volume so browser-saved API keys persist across restarts.
 - **`docs/Coolify_Deployment_Guide.pdf`** — full step-by-step deployment guide with architecture and flow diagrams.
 
-> **Coolify build speed (uv):** Because the build now uses `uv` instead of `pip`, the dependency resolution that previously stalled silently for 7+ minutes (and could trip Coolify's *helper container timeout* / be killed by the OOM killer) now completes in a fraction of the time. Keep the **Build Timeout** at `3600` seconds (1 hour) as it already is — no further increase is needed. Subsequent deploys reuse the cached dependency layer and build in seconds.
+> **Coolify 1-hour build limits:** The build uses `uv` (parallel, streams progress) and caches the dependency layer across builds. On slow network links (~80 kB/s measured on one host) the **first** build's image + PyPI downloads can approach the 1-hour queue timeout, so if the first deploy still times out, re-deploy once — Docker will reuse the layers already downloaded and the second build completes quickly. Keep the **Build Timeout** at `3600` seconds (1 hour) as it already is.
 
 ---
 

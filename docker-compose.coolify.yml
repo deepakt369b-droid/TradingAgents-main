@@ -28,7 +28,8 @@ services:
       - tradingagents_data:/home/appuser/.tradingagents
       - tradingagents_config:/home/appuser/app/config
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8000/api/config || exit 1"]
+      # Uses Python stdlib (no curl installed in the slim runtime image).
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/config', timeout=5)\" || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

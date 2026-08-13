@@ -1,15 +1,19 @@
-# syntax=docker/dockerfile:1
 # ─────────────────────────────────────────────────────────────────────────────
 # TradingAgents — Coolify / Docker build
 #
-# WHY uv INSTEAD OF pip  (fixes Coolify "helper container timeout" at ~7 min):
+# WHY uv INSTEAD OF pip  (fixes Coolify "helper container timeout"):
 #   - uv downloads & compiles dependencies in parallel and streams progress
 #     output continuously, so Docker BuildKit / Coolify never mark the step
-#     as "hung" (pip can go silent for minutes resolving pydantic-core, lxml,
-#     cryptography, numpy, pandas → false-positive OOM / timeout).
-#   - uv is a single static binary (10-100x faster dependency resolution).
-#   - UV_HTTP_TIMEOUT=600 replaces pip's default 15s socket timeout, so slow
-#     PyPI responses don't abort the build.
+#     as "hung" (pip can go silent for minutes → false-positive OOM / timeout).
+#   - UV_HTTP_TIMEOUT=600 replaces pip's default 15s socket timeout.
+#
+# BUILD-SPEED NOTES (this Coolify server's network is ~80 kB/s, so every MB
+# counts — the previous build exceeded the 1h queue timeout on downloads):
+#   - No `# syntax=docker/dockerfile:1` directive → avoids pulling the 14MB
+#     BuildKit frontend image (saves ~12 min on slow networks).
+#   - Single base image `python:3.12-slim` for BOTH stages; uv is installed
+#     via pip (small wheel) instead of pulling the ~70MB uv base image.
+#   - No curl in the runtime image; the healthcheck uses Python's stdlib.
 #
 # LAYER ORDERING  (keeps dependency layer cached permanently):
 #   1. Copy ONLY dependency manifests (pyproject.toml, README.md, requirements.txt)
@@ -17,10 +21,14 @@
 #   3. Copy application source LAST
 #   4. uv pip install --no-deps .           ← only this layer re-runs on code change
 # ─────────────────────────────────────────────────────────────────────────────
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
+FROM python:3.12-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_HTTP_TIMEOUT=600
+
+# Install uv (fast Python package installer) — small wheel, avoids pulling a
+# separate ~70MB uv base image on this slow network.
+RUN pip install --no-cache-dir uv
 
 # Dedicated virtualenv so the runtime image needs no build tools.
 RUN python -m venv /opt/venv
@@ -55,10 +63,6 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 RUN useradd --create-home appuser \
  && install -d -m 0755 -o appuser -g appuser /home/appuser/.tradingagents
-# curl is used by the docker-compose healthcheck.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends curl \
- && rm -rf /var/lib/apt/lists/*
 USER appuser
 WORKDIR /home/appuser/app
 
