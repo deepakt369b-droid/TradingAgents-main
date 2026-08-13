@@ -1,8 +1,10 @@
 """Generate the Coolify deployment guide PDF for TradingAgents.
 
 Produces docs/Coolify_Deployment_Guide.pdf with embedded diagrams and
-step-by-step instructions for deploying on a self-hosted Coolify instance
-running on an Ubuntu VM at http://192.168.0.161:8000.
+step-by-step instructions for deploying on a self-hosted Coolify v4 instance.
+
+This version matches the Coolify dashboard fields shown in the user's screenshot
+and explains why the default "Nixpacks" build pack fails for this project.
 """
 
 from __future__ import annotations
@@ -111,26 +113,58 @@ def build_pdf():
     # ============ COVER ============
     story.append(Spacer(1, 1.2 * inch))
     story.append(Paragraph("TradingAgents", title_style))
-    story.append(Paragraph("Deployment Guide for Self-Hosted Coolify", subtitle_style))
+    story.append(Paragraph("Deployment Guide for Self-Hosted Coolify v4", subtitle_style))
     story.append(Spacer(1, 0.3 * inch))
-    story.append(Paragraph("Version 1.0  |  Ubuntu VM  |  Coolify at <b>http://192.168.0.161:8000</b>", body_style))
+    story.append(Paragraph(
+        "Version 1.1  |  Ubuntu VM  |  Coolify at <b>http://192.168.0.161:8000</b>",
+        body_style,
+    ))
     story.append(Spacer(1, 0.5 * inch))
     story.append(Paragraph(
         "This guide walks you through deploying the TradingAgents multi-agent LLM "
-        "financial trading framework on your self-hosted Coolify instance. It covers "
-        "code preparation, Coolify configuration, environment variables, port mapping, "
-        "and configuring API keys directly in the browser.",
+        "financial trading framework on your self-hosted Coolify instance. It is "
+        "written for the Coolify dashboard fields shown in your screenshot and "
+        "covers the exact build-pack, port, and environment settings needed to "
+        "deploy without errors.",
         body_style,
     ))
     story.append(PageBreak())
 
-    # ============ 1. PREREQUISITES ============
-    story.append(Paragraph("1. Prerequisites", h1_style))
+    # ============ 1. WHY THE DEFAULT DEPLOYMENT FAILS ============
+    story.append(Paragraph("1. Why the default deployment fails", h1_style))
+    story.append(Paragraph(
+        "In the Coolify dashboard screenshot the resource is configured as a "
+        "<b>Nixpacks</b> application with <b>Ports Expose = 3000</b> and a long set of "
+        "Nix-specific <b>Custom Docker Options</b>. That is the wrong build pack for "
+        "this project and it produces a build/deploy error.",
+        body_style,
+    ))
+    story.append(Spacer(1, 0.15 * inch))
+    story.append(_bullet_list([
+        "<b>TradingAgents is not a Nixpacks / static-site project.</b> It is a Python "
+        "project that ships its own <b>Dockerfile</b> and <b>docker-compose.coolify.yml</b>.",
+        "<b>Nixpacks cannot auto-detect the correct start command</b> because the entry "
+        "point is a custom uvicorn command inside the Dockerfile.",
+        "<b>Port 3000 is wrong</b> for this app. The container listens internally on "
+        "<b>8000</b>; Coolify itself already uses host port <b>8000</b>, so the app must "
+        "be exposed on a different host port (e.g. <b>8001</b>) or through a Coolify domain.",
+        "<b>The Nixpacks custom Docker options must be removed.</b> They are only needed "
+        "when Coolify builds with Nixpacks.",
+    ]))
+    story.append(Spacer(1, 0.15 * inch))
+    story.append(Paragraph(
+        "Fix: change the <b>Build Pack</b> to <b>Docker Compose</b> (recommended) or "
+        "<b>Dockerfile</b>, clear the custom options, and expose the correct port.",
+        warn_style,
+    ))
+
+    # ============ 2. PREREQUISITES ============
+    story.append(Paragraph("2. Prerequisites", h1_style))
     story.append(_bullet_list([
         "<b>Ubuntu VM</b> with Docker installed and running.",
-        "<b>Coolify</b> installed and accessible at <b>http://192.168.0.161:8000</b>.",
+        "<b>Coolify v4</b> installed and accessible at <b>http://192.168.0.161:8000</b>.",
         "<b>Git repository</b> (GitHub, GitLab, or Gitea) containing the TradingAgents project.",
-        "<b>LLM API key</b> for at least one provider (OpenAI, Anthropic, Google, etc.).",
+        "<b>LLM API key</b> for at least one provider (OpenAI, Anthropic, Google, etc.) — or enter it later in the browser.",
         "Network access from your browser to the VM on the LAN.",
     ]))
     story.append(Spacer(1, 0.2 * inch))
@@ -140,8 +174,8 @@ def build_pdf():
         note_style,
     ))
 
-    # ============ 2. ARCHITECTURE ============
-    story.append(Paragraph("2. Architecture Overview", h1_style))
+    # ============ 3. ARCHITECTURE ============
+    story.append(Paragraph("3. Architecture Overview", h1_style))
     story.append(Paragraph(
         "The diagram below shows how the browser, Coolify, the app container, and "
         "persistent volumes fit together on your LAN.",
@@ -154,81 +188,81 @@ def build_pdf():
     story.append(Spacer(1, 0.2 * inch))
     story.append(Paragraph(
         "<b>Key points:</b> The browser reaches the app at <b>http://192.168.0.161:8001</b>. "
-        "Coolify's proxy routes that to the container's internal port <b>8000</b>. "
+        "Coolify routes that to the container's internal port <b>8000</b>. "
         "API keys saved in the browser persist to the <b>tradingagents_config</b> volume.",
         body_style,
     ))
 
-    # ============ 3. CODE CHANGES ============
-    story.append(Paragraph("3. Required Code Changes", h1_style))
+    # ============ 4. COOLIFY CONFIGURATION (Docker Compose) ============
+    story.append(Paragraph("4. Recommended Coolify Configuration", h1_style))
     story.append(Paragraph(
-        "Two files were updated so the app runs headless in a container and avoids the "
-        "port conflict with Coolify.",
+        "Use the <b>Docker Compose</b> build pack. It reads the project's "
+        "<b>docker-compose.coolify.yml</b> file, so ports, environment variables, "
+        "volumes, and the healthcheck are applied automatically.",
         body_style,
     ))
+    story.append(Spacer(1, 0.15 * inch))
 
-    story.append(Paragraph("3.1 Dockerfile — headless web server", h2_style))
+    story.append(Paragraph("4.1 General tab", h2_style))
+    fields = [
+        ["Field", "Value"],
+        ["Build Pack", "Docker Compose"],
+        ["Base Directory", "/"],
+        ["Docker Compose Location", "docker-compose.coolify.yml"],
+        ["Is it a static site?", "No / unchecked"],
+        ["Custom Docker Options", "Leave empty"],
+    ]
+    table = Table(fields, colWidths=[2.8 * inch, 4.0 * inch])
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), INDIGO),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9.5),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 7),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+    ]))
+    story.append(table)
+    story.append(Spacer(1, 0.15 * inch))
     story.append(Paragraph(
-        "The original CMD launched the desktop launcher, which binds to 127.0.0.1 on a "
-        "random port and tries to open a native window — this fails in a headless container. "
-        "It is replaced with a uvicorn web server bound to 0.0.0.0:8000:",
+        "<b>Important:</b> Do <b>not</b> select <b>Nixpacks</b>. The Nixpacks options "
+        "you saw in the screenshot are not used for this project.",
+        warn_style,
+    ))
+
+    story.append(Paragraph("4.2 Network tab", h2_style))
+    story.append(Paragraph(
+        "The <b>docker-compose.coolify.yml</b> file already maps the correct ports. "
+        "You only need to make sure Coolify exposes the container port:",
         body_style,
     ))
     story.append(Spacer(1, 0.1 * inch))
     story.append(_code_block(
-        'CMD ["uvicorn", "app.server:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]'
-    ))
-
-    story.append(Paragraph("3.2 docker-compose.coolify.yml — port mapping", h2_style))
-    story.append(Paragraph(
-        "Since Coolify uses host port 8000, the app is mapped to host port 8001:",
-        body_style,
+        "Ports Expose:  8000\n"
+        "Port Mapping: 8001:8000   # host 8001 -> container 8000"
     ))
     story.append(Spacer(1, 0.1 * inch))
-    story.append(_code_block(
-        "ports:\n"
-        '  - "8001:8000"   # host 8001 -> container 8000'
+    story.append(Paragraph(
+        "If you prefer to use Coolify's automatic domain/SSL instead of an IP:port, set "
+        "<b>Ports Expose = 8000</b> and leave the Port Mapping blank. Coolify will "
+        "proxy the generated domain to port 8000 inside the container.",
+        note_style,
     ))
 
-    # ============ 4. DEPLOYMENT FLOW ============
-    story.append(Paragraph("4. Step-by-Step Deployment", h1_style))
-    flow_img = DIAGRAM_DIR / "deploy_flow.png"
-    if flow_img.exists():
-        story.append(Image(str(flow_img), width=6.8 * inch, height=7.4 * inch))
-    story.append(PageBreak())
-
-    story.append(Paragraph("4.1 Push the code to a Git repository", h2_style))
-    story.append(_numbered_list([
-        "Create a repository on GitHub, GitLab, or Gitea.",
-        "Push the TradingAgents project (including <b>Dockerfile</b> and <b>docker-compose.coolify.yml</b>).",
-        "Ensure <b>config/credentials.json</b> is NOT committed (it is in .gitignore).",
-    ]))
-
-    story.append(Paragraph("4.2 Add the repository in Coolify", h2_style))
-    story.append(_numbered_list([
-        "Log in to Coolify at <b>http://192.168.0.161:8000</b>.",
-        "Go to <b>Projects</b> → <b>New Project</b> → give it a name (e.g. 'TradingAgents').",
-        "Click <b>New Resource</b> → <b>Public Repository</b> (or Private Repository if using a token).",
-        "Paste the repository URL and select the branch (e.g. <b>main</b>).",
-    ]))
-
-    story.append(Paragraph("4.3 Configure the build", h2_style))
-    story.append(_numbered_list([
-        "Set <b>Build Pack</b> to <b>Dockerfile</b>.",
-        "Set <b>Base Directory</b> to <b>/</b> (repo root).",
-        "Coolify will use the <b>Dockerfile</b> at the root.",
-    ]))
-
-    story.append(Paragraph("4.4 Set environment variables", h2_style))
+    story.append(Paragraph("4.3 Environment variables", h2_style))
     story.append(Paragraph(
-        "In the resource's <b>Environment Variables</b> tab, add:",
+        "The Docker Compose file already sets <b>PORT=8000</b>. Add only the "
+        "variables you need. At minimum you can leave all API-key variables empty "
+        "and enter the key later in the browser.",
         body_style,
     ))
     story.append(Spacer(1, 0.1 * inch))
     story.append(_code_block(
         "PORT=8000\n"
         "TRADINGAGENTS_LLM_PROVIDER=openai\n"
-        "# Optional: pre-seed keys (or set them later in the browser)\n"
+        "# Optional: pre-seed API keys (otherwise save them in the browser)\n"
         "# OPENAI_API_KEY=sk-...\n"
         "# ANTHROPIC_API_KEY=sk-ant-...\n"
         "# GOOGLE_API_KEY=AIza...\n"
@@ -237,32 +271,63 @@ def build_pdf():
         "# CLOUDFLARE_BYOK_ALIAS=default"
     ))
 
-    story.append(Paragraph("4.5 Configure the port", h2_style))
-    story.append(Paragraph(
-        "In the resource's <b>Ports</b> / <b>Networking</b> settings, map:",
-        body_style,
-    ))
-    story.append(Spacer(1, 0.1 * inch))
-    story.append(_code_block(
-        "Host port:  8001\n"
-        "Container port:  8000"
-    ))
-    story.append(Paragraph(
-        "This avoids the conflict with Coolify on port 8000. If you prefer, you can "
-        "instead use Coolify's built-in reverse proxy with a domain.",
-        note_style,
-    ))
+    # ============ 5. DEPLOYMENT FLOW ============
+    story.append(Paragraph("5. Step-by-Step Deployment", h1_style))
+    flow_img = DIAGRAM_DIR / "deploy_flow.png"
+    if flow_img.exists():
+        story.append(Image(str(flow_img), width=6.8 * inch, height=7.4 * inch))
+    story.append(PageBreak())
 
-    story.append(Paragraph("4.6 Deploy", h2_style))
+    story.append(Paragraph("5.1 Push the code to a Git repository", h2_style))
+    story.append(_numbered_list([
+        "Create a repository on GitHub, GitLab, or Gitea.",
+        "Push the TradingAgents project (including <b>Dockerfile</b>, <b>pyproject.toml</b>, and <b>docker-compose.coolify.yml</b>).",
+        "Ensure <b>config/credentials.json</b> is NOT committed (it is in .gitignore).",
+    ]))
+
+    story.append(Paragraph("5.2 Add the repository in Coolify", h2_style))
+    story.append(_numbered_list([
+        "Log in to Coolify at <b>http://192.168.0.161:8000</b>.",
+        "Go to <b>Projects</b> → <b>New Project</b> → give it a name (e.g. 'TradingAgents').",
+        "Click <b>New Resource</b> → <b>Public Repository</b> (or Private Repository / GitHub App if needed).",
+        "Paste the repository URL and select the branch (e.g. <b>main</b>).",
+    ]))
+
+    story.append(Paragraph("5.3 Configure the build pack", h2_style))
+    story.append(_numbered_list([
+        "Open the <b>General</b> tab of the new resource.",
+        "Set <b>Build Pack</b> to <b>Docker Compose</b>.",
+        "Set <b>Base Directory</b> to <b>/</b>.",
+        "Set <b>Docker Compose Location</b> to <b>docker-compose.coolify.yml</b>.",
+        "Make sure <b>Custom Docker Options</b> is empty.",
+    ]))
+
+    story.append(Paragraph("5.4 Configure the network", h2_style))
+    story.append(_numbered_list([
+        "Open the <b>Network</b> / <b>Ports</b> section.",
+        "Set <b>Ports Expose</b> to <b>8000</b>.",
+        "Set <b>Port Mapping</b> to <b>8001:8000</b> (host 8001 → container 8000).",
+        "Leave the mapping blank if you will use a Coolify-generated domain instead.",
+    ]))
+
+    story.append(Paragraph("5.5 Set environment variables (optional)", h2_style))
+    story.append(_numbered_list([
+        "Open the <b>Environment Variables</b> tab.",
+        "Add <b>PORT=8000</b> if it is not already inherited from the compose file.",
+        "Add <b>TRADINGAGENTS_LLM_PROVIDER=openai</b> (or google, anthropic, etc.).",
+        "API keys can be left empty and entered later in the browser.",
+    ]))
+
+    story.append(Paragraph("5.6 Deploy", h2_style))
     story.append(_numbered_list([
         "Click <b>Deploy</b>.",
-        "Watch the build logs — the Docker image will be built and the container started.",
+        "Watch the build logs — Coolify will build the Docker image and start the container.",
         "Wait for the status to show <b>Running</b> and the healthcheck to pass.",
     ]))
 
-    story.append(Paragraph("4.7 Verify the healthcheck", h2_style))
+    story.append(Paragraph("5.7 Verify the healthcheck", h2_style))
     story.append(Paragraph(
-        "The container's healthcheck calls <b>GET /api/config</b> on port 8000. "
+        "The compose file's healthcheck calls <b>GET /api/config</b> on port 8000. "
         "A healthy container returns HTTP 200. You can verify manually:",
         body_style,
     ))
@@ -271,27 +336,45 @@ def build_pdf():
         "curl -f http://192.168.0.161:8001/api/config"
     ))
 
-    story.append(Paragraph("4.8 Open the app", h2_style))
+    story.append(Paragraph("5.8 Open the app", h2_style))
     story.append(Paragraph(
         "Open <b>http://192.168.0.161:8001</b> in your browser. You should see the "
         "TradingAgents configuration page.",
         body_style,
     ))
 
-    # ============ 5. CONFIGURE API KEYS IN BROWSER ============
-    story.append(Paragraph("5. Configure API Keys in the Browser", h1_style))
+    # ============ 6. DOCKERFILE ALTERNATIVE ============
+    story.append(Paragraph("6. Dockerfile Build Pack (alternative)", h1_style))
     story.append(Paragraph(
-        "TradingAgents now lets you save API keys directly in the browser — no need to "
+        "If you prefer not to use Docker Compose, you can deploy with the "
+        "<b>Dockerfile</b> build pack instead. In that case you must configure "
+        "ports, environment variables, and storage manually in the Coolify UI.",
+        body_style,
+    ))
+    story.append(Spacer(1, 0.15 * inch))
+    story.append(_bullet_list([
+        "<b>Build Pack</b> = Dockerfile",
+        "<b>Base Directory</b> = /",
+        "<b>Ports Expose</b> = 8000",
+        "<b>Port Mapping</b> = 8001:8000",
+        "Add the environment variables from section 4.3 manually.",
+        "Add two <b>Persistent Storage</b> mounts: <b>/home/appuser/.tradingagents</b> and <b>/home/appuser/app/config</b>.",
+    ]))
+
+    # ============ 7. CONFIGURE API KEYS IN BROWSER ============
+    story.append(Paragraph("7. Configure API Keys in the Browser", h1_style))
+    story.append(Paragraph(
+        "TradingAgents lets you save API keys directly in the browser — no need to "
         "set them in Coolify. Keys persist to <b>config/credentials.json</b> inside the "
         "container, backed by the <b>tradingagents_config</b> volume.",
         body_style,
     ))
     story.append(Spacer(1, 0.2 * inch))
     story.append(_numbered_list([
-        "Open <b>http://192.168.0.161:8001</b>.",
+        "Open <b>http://192.168.0.161:8001</b> (or your Coolify domain).",
         "In the <b>LLM Configuration</b> section, select your provider (e.g. OpenAI).",
         "Enter your API key in the <b>API Key</b> field.",
-        "Click <b>Save Key</b> — a ✓ confirms it was saved to the project config.",
+        "Click <b>Save Key</b> — a checkmark confirms it was saved to the project config.",
         "Click <b>Validate & Fetch Models</b> to test the key and load available models.",
         "Select your Deep & Quick models, then click <b>Launch Analysis</b>.",
     ]))
@@ -302,8 +385,8 @@ def build_pdf():
         note_style,
     ))
 
-    # ============ 6. PERSISTENT STORAGE ============
-    story.append(Paragraph("6. Persistent Storage", h1_style))
+    # ============ 8. PERSISTENT STORAGE ============
+    story.append(Paragraph("8. Persistent Storage", h1_style))
     story.append(Paragraph(
         "Two Docker volumes persist data across container restarts and redeploys:",
         body_style,
@@ -328,40 +411,53 @@ def build_pdf():
     ]))
     story.append(table)
 
-    # ============ 7. TROUBLESHOOTING ============
-    story.append(Paragraph("7. Troubleshooting", h1_style))
+    # ============ 9. TROUBLESHOOTING ============
+    story.append(Paragraph("9. Troubleshooting", h1_style))
 
-    story.append(Paragraph("7.1 Healthcheck failing", h2_style))
+    story.append(Paragraph("9.1 Build fails or container exits immediately", h2_style))
+    story.append(_bullet_list([
+        "Make sure the <b>Build Pack</b> is <b>Docker Compose</b> (or Dockerfile), not Nixpacks.",
+        "Confirm <b>Ports Expose</b> is <b>8000</b>, not 3000.",
+        "Check that <b>Custom Docker Options</b> does not contain Nixpacks flags.",
+        "Look at the <b>Logs</b> tab in Coolify for the exact error.",
+    ]))
+
+    story.append(Paragraph("9.2 Healthcheck failing", h2_style))
     story.append(Paragraph(
         "If the container shows unhealthy, check that the app is listening on port 8000 "
-        "inside the container and that the Dockerfile CMD uses uvicorn (not the desktop "
-        "launcher).",
+        "inside the container and that the Dockerfile CMD uses uvicorn:",
         body_style,
     ))
+    story.append(Spacer(1, 0.1 * inch))
+    story.append(_code_block(
+        'CMD ["uvicorn", "app.server:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]'
+    ))
 
-    story.append(Paragraph("7.2 Port conflict", h2_style))
+    story.append(Paragraph("9.3 Port conflict", h2_style))
     story.append(Paragraph(
-        "Coolify uses port 8000. If you try to map the app to 8000 as well, the container "
-        "will fail to start. Use host port 8001 (or another free port).",
+        "Coolify uses host port 8000. If you try to map the app to host port 8000 as "
+        "well, the container will fail to start. Use host port 8001 (or another free "
+        "port) and point Coolify at container port 8000.",
         body_style,
     ))
 
-    story.append(Paragraph("7.3 Cannot reach the app from browser", h2_style))
+    story.append(Paragraph("9.4 Cannot reach the app from browser", h2_style))
     story.append(_bullet_list([
         "Verify the VM firewall allows inbound traffic on port 8001.",
         "Confirm the container is running: <b>docker ps</b> on the VM.",
         "Check the app logs in Coolify for startup errors.",
+        "If you used a Coolify domain, make sure DNS resolves to the VM.",
     ]))
 
-    story.append(Paragraph("7.4 API key not working", h2_style))
+    story.append(Paragraph("9.5 API key not working", h2_style))
     story.append(_bullet_list([
         "Ensure you clicked <b>Save Key</b> (not just typed the key).",
         "Verify the key is valid with <b>Validate & Fetch Models</b>.",
         "Check that the <b>tradingagents_config</b> volume is mounted so the key persists.",
     ]))
 
-    # ============ 8. SECURITY ============
-    story.append(Paragraph("8. Security Notes", h1_style))
+    # ============ 10. SECURITY ============
+    story.append(Paragraph("10. Security Notes", h1_style))
     story.append(_bullet_list([
         "<b>config/credentials.json</b> is excluded from git via .gitignore — never commit API keys.",
         "Keys are stored in plaintext (same as .env). Protect the VM and volume access.",
@@ -371,14 +467,17 @@ def build_pdf():
         "Save Key feature for secrets.",
     ]))
 
-    # ============ 9. SUMMARY ============
-    story.append(Paragraph("9. Quick Reference", h1_style))
+    # ============ 11. SUMMARY ============
+    story.append(Paragraph("11. Quick Reference", h1_style))
     story.append(_bullet_list([
         "Coolify dashboard: <b>http://192.168.0.161:8000</b>",
         "TradingAgents app: <b>http://192.168.0.161:8001</b>",
+        "Build pack: <b>Docker Compose</b> with <b>docker-compose.coolify.yml</b>",
+        "Container port: <b>8000</b>",
+        "Host port: <b>8001</b>",
         "Healthcheck: <b>GET /api/config</b>",
         "Config store: <b>config/credentials.json</b> (volume: tradingagents_config)",
-        "Build: <b>Dockerfile</b> → uvicorn on 0.0.0.0:8000",
+        "Web server: <b>Dockerfile</b> → uvicorn on 0.0.0.0:8000",
     ]))
 
     doc.build(story)
