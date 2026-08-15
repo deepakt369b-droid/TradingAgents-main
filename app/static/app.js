@@ -20,6 +20,8 @@
     stats: { llm_calls: 0, tool_calls: 0, tokens_in: 0, tokens_out: 0 },
     finalState: null,
     config: null,            // from /api/config
+    cliPaths: {},            // { tool: path } saved CLI overrides
+    cliKeys: {},             // { tool: api_key } per-tool agent keys
   };
 
   // ---------- DOM Refs ----------
@@ -101,6 +103,11 @@
       } else {
         state.cliPaths = {};
       }
+      if (prefs.cli_keys) {
+        state.cliKeys = prefs.cli_keys;
+      } else {
+        state.cliKeys = {};
+      }
     } catch (e) { /* ignore */ }
   }
 
@@ -114,6 +121,7 @@
         depth: state.selectedDepth,
         analysts: state.selectedAnalysts,
         cli_paths: state.cliPaths || {},
+        cli_keys: state.cliKeys || {},
       }));
     } catch (e) { /* ignore */ }
   }
@@ -124,6 +132,10 @@
       const resp = await fetch('/api/find-clis');
       if (!resp.ok) throw new Error('Failed to fetch CLIs');
       const data = await resp.json();
+      // Response is { tools: {tool: path}, models: {tool: modelId} } (with a
+      // legacy flat fallback for older backends)
+      const toolsFound = (data && data.tools) ? data.tools : data;
+      const modelMap = (data && data.models) ? data.models : {};
       
       const grid = $('#cli-grid');
       grid.innerHTML = '';
@@ -131,8 +143,9 @@
       const tools = ["claude", "codex", "kimi", "freebuff", "gemini", "kimchi", "opencode"];
       tools.forEach(tool => {
         // Use saved path if it exists, otherwise use detected path
-        const path = (state.cliPaths && state.cliPaths[tool]) || data[tool];
+        const path = (state.cliPaths && state.cliPaths[tool]) || toolsFound[tool];
         const isFound = !!path;
+        const savedKey = (state.cliKeys && state.cliKeys[tool]) || '';
         
         const item = document.createElement('div');
         item.className = 'cli-item';
@@ -143,8 +156,12 @@
               <span class="cli-name">${tool}</span>
             </label>
             <span class="cli-status ${isFound ? 'found' : 'missing'}">${isFound ? 'Found' : 'Not Installed'}</span>
+            ${isFound ? `<button type="button" class="btn-secondary cli-login-btn" data-tool="${tool}" style="padding:2px 8px; font-size:0.72rem;">🔑 Login</button>` : ''}
           </div>
           <input type="text" class="cli-input" data-tool="${tool}" value="${path || ''}" placeholder="Path (e.g. C:/bin/${tool}.exe)">
+          <input type="password" class="cli-key-input" data-tool="${tool}" value="${savedKey}" placeholder="API key (optional — overrides env var)" autocomplete="off">
+          ${modelMap[tool] ? `<div class="text-muted" style="font-size:0.72rem;">Model: ${escapeHtml(modelMap[tool])}</div>` : ''}
+          <div class="cli-login-panel hidden" data-tool="${tool}"></div>
         `;
         
         // Listen to input changes to update state
@@ -165,12 +182,123 @@
           }
         });
         
+        // Persist the per-tool API key
+        const keyInput = item.querySelector('.cli-key-input');
+        keyInput.addEventListener('change', (e) => {
+          if (!state.cliKeys) state.cliKeys = {};
+          state.cliKeys[tool] = e.target.value.trim();
+          savePreferences();
+        });
+        
+        // OAuth login (fallback when no API key is available)
+        const loginBtn = item.querySelector('.cli-login-btn');
+        if (loginBtn) {
+          loginBtn.addEventListener('click', () => startCliLogin(tool, loginBtn));
+        }
+        
         grid.appendChild(item);
       });
       
     } catch (e) {
       console.warn('Could not detect CLIs:', e);
     }
+  }
+
+  // ---------- CLI Agent OAuth Login ----------
+  async function startCliLogin(tool, btn) {
+    if (btn.disabled) return;
+    btn.disabled = true;
+    btn.textContent = 'Starting...';
+    const panel = document.querySelector(`.cli-login-panel[data-tool="${tool}"]`);
+    try {
+      const resp = await fetch('/api/cli-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tool }),
+      });
+      const data = await resp.json();
+      if (!data.success) {
+        btn.textContent = '🔑 Login';
+        btn.disabled = false;
+        showToast(`Login error: ${data.error || 'unknown'}`, 'error', 6000);
+        return;
+      }
+      if (data.done) {
+        btn.textContent = '🔑 Login';
+        btn.disabled = false;
+        showToast(`${tool}: login finished`, 'success', 5000);
+        return;
+      }
+      btn.textContent = '⏳ Authorizing...';
+      renderLoginPanel(panel, tool, data.url, data.code);
+      pollCliLoginStatus(tool, btn);
+    } catch (e) {
+      btn.textContent = '🔑 Login';
+      btn.disabled = false;
+      showToast(`Login failed: ${e.message}`, 'error', 6000);
+    }
+  }
+
+  function renderLoginPanel(panel, tool, url, code) {
+    if (!panel) return;
+    panel.classList.remove('hidden');
+    if (!url) {
+      panel.innerHTML = '<span class="text-muted">Waiting for the login URL from the CLI...</span>';
+      return;
+    }
+    const isLocal = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/)/.test(url);
+    const hostNote = isLocal
+      ? '<br><span class="text-muted" style="color:#fbbf24;">This tool uses a localhost callback — on a remote deployment it only completes with SSH port forwarding. Prefer an API key for this one.</span>'
+      : '';
+    const codeHtml = code
+      ? `<br><span class="text-muted">Code: <b>${escapeHtml(code)}</b> (enter it on the page if asked)</span>`
+      : '';
+    panel.innerHTML =
+      `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">Open authorization page</a>` +
+      codeHtml + hostNote +
+      '<br><span class="text-muted">Authorize in the browser, then this page updates automatically.</span>';
+  }
+
+  function pollCliLoginStatus(tool, btn) {
+    let attempts = 0;
+    const interval = setInterval(async () => {
+      attempts++;
+      try {
+        const resp = await fetch(`/api/cli-login-status?tool=${encodeURIComponent(tool)}`);
+        const data = await resp.json();
+        const panel = document.querySelector(`.cli-login-panel[data-tool="${tool}"]`);
+        if (data.done) {
+          clearInterval(interval);
+          btn.textContent = '🔑 Login';
+          btn.disabled = false;
+          if (panel) {
+            // `success` (when present) already accounts for CLIs that crash
+            // on teardown after confirming the login; fall back to exit code.
+            const ok = data.success !== undefined ? data.success : data.exit_code === 0;
+            if (ok) {
+              panel.innerHTML = '<span style="color:#34d399;">✓ Authorized — credentials saved on the server</span>';
+              showToast(`${tool}: logged in with your account`, 'success', 5000);
+            } else {
+              const tail = (data.output || []).slice(-2).join(' ');
+              panel.innerHTML = `<span style="color:#f87171;">Login failed (code ${data.exit_code}) ${escapeHtml(tail)}</span>`;
+              showToast(`${tool}: login failed`, 'error', 6000);
+            }
+          }
+          return;
+        }
+        // Keep the link visible while waiting (re-render harmless)
+        if (panel && data.url) {
+          renderLoginPanel(panel, tool, data.url, data.code);
+        }
+        if (attempts > 240) { // ~10 min cap
+          clearInterval(interval);
+          btn.textContent = '🔑 Login';
+          btn.disabled = false;
+          if (panel) panel.innerHTML = '<span class="text-muted">Login link expired — try again.</span>';
+          showToast(`${tool}: login timed out`, 'warning', 6000);
+        }
+      } catch (e) { /* transient network errors: keep polling */ }
+    }, 2500);
   }
 
   // ---------- Config Loading ----------
@@ -180,6 +308,7 @@
       if (!resp.ok) throw new Error('Failed to load config');
       state.config = await resp.json();
       populateModels($('#llm-provider').value);
+      toggleBaseUrlVisibility($('#llm-provider').value);
     } catch (e) {
       console.warn('Could not load config:', e);
       // Set fallback models
@@ -198,7 +327,8 @@
       models = state.config.models[provider];
     }
 
-    if (models) {
+    const hasModels = models && ((models.deep && models.deep.length) || (models.quick && models.quick.length));
+    if (hasModels) {
       (models.deep || []).forEach(m => {
         deepSelect.innerHTML += `<option value="${m}">${m}</option>`;
       });
@@ -206,6 +336,8 @@
         quickSelect.innerHTML += `<option value="${m}">${m}</option>`;
       });
     } else {
+      // Empty list (e.g. custom-only providers like kimi) falls back to
+      // known-good defaults so the selects are never left blank.
       populateModelsFallback();
     }
 
@@ -219,6 +351,7 @@
       google: { deep: ['gemini-3.5-pro', 'gemini-3.0-pro'], quick: ['gemini-3.5-flash', 'gemini-3.0-flash'] },
       anthropic: { deep: ['claude-opus-4', 'claude-sonnet-4'], quick: ['claude-sonnet-4', 'claude-haiku-3.5'] },
       deepseek: { deep: ['deepseek-r1', 'deepseek-chat'], quick: ['deepseek-chat'] },
+      kimi: { deep: ['kimi-latest', 'kimi-k2'], quick: ['kimi-latest', 'kimi-k2-turbo'] },
       nvidia: { deep: ['meta/llama-3.1-70b-instruct', 'nvidia/llama-3.1-nemotron-70b-instruct'], quick: ['meta/llama-3.1-8b-instruct'] },
       ollama: { deep: ['llama3.3:70b'], quick: ['llama3.3:8b'] },
       openrouter: { deep: ['anthropic/claude-3.5-sonnet', 'openai/gpt-4o'], quick: ['meta-llama/llama-3.1-8b-instruct'] },
@@ -258,14 +391,14 @@
   }
 
   function toggleBaseUrlVisibility(provider) {
+    // Always show the endpoint field, prefilled with the provider's default
+    // API base URL (from /api/config) and editable.
     const wrap = $('#base-url-wrap');
-    if (provider === 'openai_compatible' || provider === 'lm_studio' || provider === 'openrouter' || provider === 'nvidia') {
-      wrap.classList.remove('hidden');
-      if (provider === 'nvidia' && !$('#base-url').value.trim()) {
-        $('#base-url').value = 'https://integrate.api.nvidia.com/v1';
-      }
-    } else {
-      wrap.classList.add('hidden');
+    wrap.classList.remove('hidden');
+    const input = $('#base-url');
+    if (!input.value.trim() && state.config && state.config.base_urls) {
+      const url = state.config.base_urls[provider];
+      if (url) input.value = url;
     }
   }
 
@@ -321,6 +454,7 @@
             cf_gateway_id: $('#cf-gateway-id').value.trim(),
             cf_byok_alias: $('#cf-byok-alias').value.trim(),
             cf_gateway_url: $('#cf-gateway-url').value.trim(),
+            cf_gateway_token: $('#cf-gateway-token').value.trim(),
             execution_platform: $('#exec-platform').value,
             alpaca_api_key: $('#alpaca-api-key').value.trim(),
             alpaca_secret_key: $('#alpaca-secret-key').value.trim(),
@@ -586,13 +720,18 @@
       cli_options: {},
     };
 
+    const cliKeys = {};
     $$('.cli-enable-checkbox').forEach(cb => {
       if (cb.checked) {
         const tool = cb.dataset.tool;
-        const path = cb.closest('.cli-item').querySelector('.cli-input').value.trim();
+        const item = cb.closest('.cli-item');
+        const path = item.querySelector('.cli-input').value.trim();
         request.cli_options[tool] = path || true;
+        const key = item.querySelector('.cli-key-input').value.trim();
+        if (key) cliKeys[tool] = key;
       }
     });
+    request.cli_keys = cliKeys;
 
     const tickerStr = ticker.toUpperCase();
     const isResume = (state.lastTicker === tickerStr && state.lastDate === date && Object.keys(state.reports).length > 0);
@@ -804,6 +943,7 @@
     investment_plan: 'Research Team Decision',
     trader_investment_plan: 'Trading Team Plan',
     final_trade_decision: 'Portfolio Management Decision',
+    cli_insights: 'Agent CLI Insights',
   };
 
   function updateReport(section, content) {

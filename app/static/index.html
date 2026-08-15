@@ -62,6 +62,7 @@
               <option value="anthropic">Anthropic (Claude)</option>
               <option value="xai">xAI (Grok)</option>
               <option value="deepseek">DeepSeek</option>
+              <option value="kimi">Moonshot (Kimi)</option>
               <option value="groq">Groq</option>
               <option value="nvidia">NVIDIA</option>
               <option value="ollama">Ollama (Local)</option>
@@ -151,6 +152,12 @@
             <div class="form-group" style="flex: 2;">
               <label for="cf-gateway-url">Gateway Endpoint URL (Optional Override)</label>
               <input type="text" id="cf-gateway-url" placeholder="https://gateway.ai.cloudflare.com/v1/{account}/{gateway}">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group" style="flex: 2;">
+              <label for="cf-gateway-token">Gateway API Token</label>
+              <input type="password" id="cf-gateway-token" placeholder="Cloudflare API token (AI Gateway: Edit + Workers AI: Read) — leave blank to keep the existing token" autocomplete="off">
             </div>
           </div>
         </div>
@@ -283,6 +290,11 @@
           <span><span class="step-num">6</span> CLI Integrations (Agent Skills)</span>
           <button class="btn-secondary" id="btn-detect-clis" style="padding: 4px 12px; font-size: 0.8rem;">Auto-Detect</button>
         </div>
+        <p class="text-muted" style="margin: 8px 0 12px 0; font-size: 0.8rem;">
+          API keys are optional — enable a tool and either paste an API key or click
+          <b>🔑 Login</b> to authorize with your provider account (OAuth). Logins are stored
+          on the server in the agent's config folder.
+        </p>
         <div class="cli-grid" id="cli-grid">
           <!-- Will be populated by JS -->
         </div>

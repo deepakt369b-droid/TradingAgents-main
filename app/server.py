@@ -60,7 +60,7 @@ def create_app() -> FastAPI:
             # Build model catalog per provider
             providers = [
                 "openai", "google", "anthropic", "xai",
-                "deepseek", "groq", "nvidia", "ollama", "openrouter", "lm_studio", "openai_compatible",
+                "deepseek", "kimi", "groq", "nvidia", "ollama", "openrouter", "lm_studio", "openai_compatible",
             ]
             models = {}
             for p in providers:
@@ -102,11 +102,34 @@ def create_app() -> FastAPI:
                 "ccxt_key_set": bool(os.environ.get("CCXT_API_KEY")),
             }
 
+            # Default API base URL per provider, so the UI can prefill the
+            # endpoint field. Single source of truth is the OpenAI-compatible
+            # provider registry; native providers get their official endpoints.
+            base_urls = {}
+            try:
+                from tradingagents.llm_clients.openai_client import OPENAI_COMPATIBLE_PROVIDERS
+                native_defaults = {
+                    "openai": "https://api.openai.com/v1",
+                    "anthropic": "https://api.anthropic.com",
+                    "google": "https://generativelanguage.googleapis.com",
+                }
+                for p in providers:
+                    spec = OPENAI_COMPATIBLE_PROVIDERS.get(p)
+                    if spec is not None and spec.base_url:
+                        base_urls[p] = spec.base_url
+                    elif p in native_defaults:
+                        base_urls[p] = native_defaults[p]
+                    else:
+                        base_urls[p] = ""
+            except Exception:
+                logger.warning("Could not resolve provider base URLs", exc_info=True)
+
             return {
                 "models": models,
                 "key_status": key_status,
                 "cloudflare_status": cf_status,
                 "execution_status": exec_status,
+                "base_urls": base_urls,
                 "defaults": {
                     "provider": DEFAULT_CONFIG.get("llm_provider", "openai"),
                     "deep_model": DEFAULT_CONFIG.get("deep_think_llm", "gpt-5.5"),
@@ -258,15 +281,44 @@ def create_app() -> FastAPI:
     # ---------- Find CLIs ----------
     @app.get("/api/find-clis")
     async def find_clis():
-        """Detect installed CLI tools on the system PATH."""
+        """Detect installed CLI tools and their default model per the model catalog."""
         import shutil
+
+        from app.cli_runner import resolve_default_model
         tools_to_check = ["claude", "codex", "kimi", "freebuff", "gemini", "kimchi", "opencode"]
-        results = {}
+        tools = {}
+        models = {}
         for tool in tools_to_check:
             # shutil.which searches the PATH and returns the absolute path if found
-            path = shutil.which(tool)
-            results[tool] = path
-        return results
+            tools[tool] = shutil.which(tool)
+            resolved = resolve_default_model(tool)
+            if resolved:
+                models[tool] = resolved
+        return {"tools": tools, "models": models}
+
+    # ---------- CLI Agent OAuth Login (fallback when no API key) ----------
+    @app.post("/api/cli-login")
+    async def cli_login(body: dict):
+        """Start an OAuth login for a CLI agent (claude, codex, opencode, ...).
+
+        Runs the agent's login command inside the container, captures the
+        authorization URL printed by the CLI, and returns it so the browser
+        UI can open it. The login process keeps running in the background;
+        poll /api/cli-login-status until it reports done.
+        """
+        tool = (body.get("tool") or "").strip().lower()
+        if not tool:
+            return {"success": False, "error": "tool is required"}
+        from app.cli_auth import start_login
+        result = await asyncio.to_thread(start_login, tool)
+        result.setdefault("tool", tool)
+        return result
+
+    @app.get("/api/cli-login-status")
+    async def cli_login_status(tool: str = ""):
+        """Return the state of a running CLI agent login for a tool."""
+        from app.cli_auth import login_status
+        return login_status(tool.strip().lower())
 
     # ---------- WebSocket: Analysis ----------
     @app.websocket("/ws/analysis")
@@ -568,10 +620,74 @@ def _run_analysis_sync(
 
             trace.append(chunk)
 
+        # ---------- CLI Agent Integrations (Agent Skills) ----------
+        # Run enabled coding-agent CLIs (claude, codex, gemini, ...) as a
+        # second-opinion research pass after the graph finishes. Each tool
+        # must be installed in the container (Dockerfile INSTALL_AGENT_CLIS)
+        # and have its provider API key set via env vars
+        # (ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY / ...).
+        cli_insights = None
+        cli_options = config.get("cli_options") or {}
+        enabled_clis = {k: v for k, v in cli_options.items() if v}
+        if enabled_clis:
+            try:
+                from app.cli_runner import run_cli_agents
+
+                send({
+                    "type": "message",
+                    "msg_type": "System",
+                    "content": f"Running enabled CLI agents: {', '.join(sorted(enabled_clis))}",
+                })
+                # Pin each agent to the model its provider gets from the app's
+                # model configuration; provider-agnostic agents (opencode) use
+                # the app's configured deep model.
+                from app.cli_runner import resolve_default_model
+                app_deep_model = request.get("deep_model") or config.get("deep_think_llm")
+                cli_models = {}
+                for tool in enabled_clis:
+                    if tool == "opencode":
+                        # opencode expects "provider/model" IDs.
+                        provider = request.get("provider", "").lower()
+                        if provider in ("openai", "anthropic", "google"):
+                            model = f"{provider}/{app_deep_model}"
+                        else:
+                            model = app_deep_model
+                    else:
+                        model = resolve_default_model(tool)
+                    if model:
+                        cli_models[tool] = model
+                cli_results = run_cli_agents(
+                    enabled_clis,
+                    ticker=ticker,
+                    analysis_date=analysis_date,
+                    language=config.get("output_language", "English"),
+                    emit=send,
+                    keys=request.get("cli_keys") or {},
+                    models=cli_models,
+                )
+                sections = []
+                for tool, res in sorted(cli_results.items()):
+                    if res["status"] == "completed" and res.get("output"):
+                        sections.append(f"### {tool}\n\n{res['output']}")
+                    else:
+                        sections.append(f"### {tool} -- not available\n\n_{res.get('error') or 'no output'}_")
+                if sections:
+                    cli_insights = "\n\n".join(sections)
+                    send({"type": "report_update", "section": "cli_insights", "content": cli_insights})
+            except Exception as exc:
+                logger.warning("CLI agent integration failed (non-fatal): %s", exc, exc_info=True)
+                send({
+                    "type": "message",
+                    "msg_type": "System",
+                    "content": f"CLI agent step failed (non-fatal): {exc}",
+                })
+
         # Merge final state
         final_state = {}
         for chunk in trace:
             final_state.update(chunk)
+        if cli_insights:
+            final_state["cli_insights"] = cli_insights
 
         send({"type": "complete", "final_state": _serialize_final_state(final_state)})
 

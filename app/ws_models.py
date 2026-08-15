@@ -20,6 +20,7 @@ class AnalysisRequest(BaseModel):
     api_key: str | None = None
     thinking_config: str | None = None
     cli_options: dict[str, str | bool] = {}
+    cli_keys: dict[str, str] = {}
 
 
 class WSMessage(BaseModel):

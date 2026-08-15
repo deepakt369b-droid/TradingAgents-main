@@ -363,6 +363,25 @@ body::before {
   color: #ff4757;
 }
 
+.cli-login-panel {
+  font-size: 0.75rem;
+  line-height: 1.5;
+  padding: 8px 10px;
+  background: rgba(167, 139, 250, 0.08);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.cli-login-panel a {
+  color: #a78bfa;
+  text-decoration: underline;
+  word-break: break-all;
+}
+
+.cli-login-btn {
+  margin-left: 6px;
+}
+
 .cli-input {
   width: 100%;
   font-size: 0.75rem;

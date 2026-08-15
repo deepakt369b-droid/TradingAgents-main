@@ -1,11 +1,18 @@
 services:
   tradingagents:
     build: .
+    ports:
+      - "8000:8000"
     env_file:
       - .env
     volumes:
       - tradingagents_data:/home/appuser/.tradingagents
       - tradingagents_config:/home/appuser/app/config
+      # CLI agent OAuth credentials survive container recreates.
+      - tradingagents_claude:/home/appuser/.claude
+      - tradingagents_codex:/home/appuser/.codex
+      - tradingagents_gemini:/home/appuser/.gemini
+      - tradingagents_opencode:/home/appuser/.local/share/opencode
     tty: true
     stdin_open: true
 
@@ -26,6 +33,10 @@ services:
     volumes:
       - tradingagents_data:/home/appuser/.tradingagents
       - tradingagents_config:/home/appuser/app/config
+      - tradingagents_claude:/home/appuser/.claude
+      - tradingagents_codex:/home/appuser/.codex
+      - tradingagents_gemini:/home/appuser/.gemini
+      - tradingagents_opencode:/home/appuser/.local/share/opencode
     depends_on:
       - ollama
     tty: true
@@ -36,4 +47,8 @@ services:
 volumes:
   tradingagents_data:
   tradingagents_config:
+  tradingagents_claude:
+  tradingagents_codex:
+  tradingagents_gemini:
+  tradingagents_opencode:
   ollama_data:

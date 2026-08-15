@@ -24,9 +24,17 @@ services:
       - CCXT_EXCHANGE=${CCXT_EXCHANGE:-binance}
       - CCXT_API_KEY=${CCXT_API_KEY:-}
       - CCXT_SECRET_KEY=${CCXT_SECRET_KEY:-}
+      # Master key that encrypts the browser-saved credentials store at rest.
+      - TRADINGAGENTS_CREDENTIALS_KEY=${TRADINGAGENTS_CREDENTIALS_KEY:-}
     volumes:
       - tradingagents_data:/home/appuser/.tradingagents
       - tradingagents_config:/home/appuser/app/config
+      # CLI agent OAuth credentials (Claude Code / Codex / Gemini / OpenCode)
+      # survive container recreates.
+      - tradingagents_claude:/home/appuser/.claude
+      - tradingagents_codex:/home/appuser/.codex
+      - tradingagents_gemini:/home/appuser/.gemini
+      - tradingagents_opencode:/home/appuser/.local/share/opencode
     healthcheck:
       # Uses Python stdlib (no curl installed in the slim runtime image).
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/config', timeout=5)\" || exit 1"]
@@ -38,3 +46,7 @@ services:
 volumes:
   tradingagents_data:
   tradingagents_config:
+  tradingagents_claude:
+  tradingagents_codex:
+  tradingagents_gemini:
+  tradingagents_opencode:

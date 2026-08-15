@@ -61,8 +61,39 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Optional CLI agent integrations ("Agent Skills"): Claude Code, OpenAI Codex,
+# Gemini CLI, OpenCode. These run headlessly inside the container when enabled
+# in the app's CLI Integrations section, so they are installed here.
+#
+# Disable to skip the ~50 MB Node download + npm installs on slow networks:
+#   docker build --build-arg INSTALL_AGENT_CLIS=0 ...
+# Each agent also needs its provider API key at runtime (ANTHROPIC_API_KEY,
+# OPENAI_API_KEY, GEMINI_API_KEY, ...) set via Coolify environment variables.
+# ─────────────────────────────────────────────────────────────────────────────
+ARG INSTALL_AGENT_CLIS=1
+RUN if [ "$INSTALL_AGENT_CLIS" = "1" ]; then \
+      python -c "import urllib.request, tarfile, os; \
+urllib.request.urlretrieve('https://nodejs.org/dist/v22.17.0/node-v22.17.0-linux-x64.tar.gz', '/tmp/node.tar.gz'); \
+tarfile.open('/tmp/node.tar.gz').extractall('/opt'); \
+os.remove('/tmp/node.tar.gz')" \
+      && ln -sf /opt/node-v22.17.0-linux-x64/bin/node /usr/local/bin/node \
+      && ln -sf /opt/node-v22.17.0-linux-x64/bin/npm /usr/local/bin/npm \
+      && ln -sf /opt/node-v22.17.0-linux-x64/bin/npx /usr/local/bin/npx \
+      && npm install -g --no-audit --no-fund @anthropic-ai/claude-code @openai/codex @google/gemini-cli opencode-ai; \
+    fi
+
+# Agent config dirs for the CLI integrations (Claude Code, Codex, Gemini,
+# OpenCode). They are pre-created with appuser ownership so that named
+# volumes mounted at these paths (see docker-compose*.yml) inherit that
+# ownership on first mount -- otherwise the volumes are root-owned and the
+# CLIs cannot write their OAuth credentials there.
 RUN useradd --create-home appuser \
- && install -d -m 0755 -o appuser -g appuser /home/appuser/.tradingagents
+ && install -d -m 0755 -o appuser -g appuser /home/appuser/.tradingagents \
+ && install -d -m 0755 -o appuser -g appuser /home/appuser/.claude \
+ && install -d -m 0755 -o appuser -g appuser /home/appuser/.codex \
+ && install -d -m 0755 -o appuser -g appuser /home/appuser/.gemini \
+ && install -d -m 0755 -o appuser -g appuser /home/appuser/.local/share/opencode
 USER appuser
 WORKDIR /home/appuser/app
 

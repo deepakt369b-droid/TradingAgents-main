@@ -4,18 +4,36 @@ Stores API keys and production settings (Cloudflare AI Gateway, brokerage
 execution) inside the project so the browser configuration page can save
 and apply them without relying on Coolify environment variables.
 
-The store is a JSON file. Keys are stored in plaintext (same as .env), so
-the file should be kept out of version control and protected by the OS.
+The store is a JSON file. At rest it is encrypted with Fernet (from the
+``cryptography`` package, already a pinned dependency) whenever a master key
+is configured via the ``TRADINGAGENTS_CREDENTIALS_KEY`` environment variable
+(e.g. a Coolify env var). The key may be any passphrase (derived with
+PBKDF2-HMAC-SHA256) or a raw 32-byte urlsafe-base64 Fernet key. Without a
+configured key the store falls back to plaintext JSON (legacy behavior), so
+upgrading is safe -- set the env var and the next save encrypts.
+
+Caveat: if the key is lost or changed, previously encrypted credentials can
+no longer be read (they are only recoverable by restoring the key that wrote
+them).
 """
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import logging
 import os
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# Master-key env var for at-rest encryption of the credentials store.
+_CREDENTIALS_KEY_ENV = "TRADINGAGENTS_CREDENTIALS_KEY"
+# Fixed salt for passphrase derivation (public; security comes from the key).
+_FERNET_SALT = b"tradingagents-credentials-v1"
+# Fernet tokens always start with this base64 prefix (version byte 0x80).
+_FERNET_PREFIX = "gAAAA"
 
 # Default location: inside the project under config/credentials.json
 _PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -76,6 +94,33 @@ PROD_ENV_MAP = {
 }
 
 
+def _fernet_key() -> bytes | None:
+    """Return the Fernet key derived from the configured master secret."""
+    secret = os.environ.get(_CREDENTIALS_KEY_ENV, "")
+    if not secret:
+        return None
+    # Accept a raw Fernet key (32-byte urlsafe base64) directly.
+    try:
+        decoded = base64.urlsafe_b64decode(secret.encode("ascii") + b"==")
+        if len(decoded) == 32:
+            return secret.encode("ascii")
+    except Exception:
+        pass
+    # Otherwise treat the value as a passphrase and derive a 32-byte key.
+    return base64.urlsafe_b64encode(
+        hashlib.pbkdf2_hmac("sha256", secret.encode("utf-8"), _FERNET_SALT, 200_000, dklen=32)
+    )
+
+
+def _fernet():
+    """Return a configured Fernet instance, or None when no master key is set."""
+    key = _fernet_key()
+    if key is None:
+        return None
+    from cryptography.fernet import Fernet
+    return Fernet(key)
+
+
 def _store_path() -> Path:
     """Return the writable store path, preferring the project directory."""
     try:
@@ -100,11 +145,33 @@ def load_credentials() -> dict:
     if not path.exists():
         return {}
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Could not read credentials store %s: %s", path, exc)
+        return {}
+
+    fernet = _fernet()
+    if raw.lstrip().startswith(_FERNET_PREFIX):
+        if fernet is None:
+            logger.warning(
+                "Credentials store %s is encrypted but %s is not set; "
+                "credentials are unavailable until the key is configured.",
+                path, _CREDENTIALS_KEY_ENV,
+            )
+            return {}
+        try:
+            raw = fernet.decrypt(raw.encode("utf-8")).decode("utf-8")
+        except Exception as exc:
+            logger.warning(
+                "Could not decrypt credentials store %s (wrong key?): %s", path, exc
+            )
+            return {}
+
+    try:
+        data = json.loads(raw)
         return data if isinstance(data, dict) else {}
     except (json.JSONDecodeError, OSError) as exc:
-        logger.warning("Could not read credentials store %s: %s", path, exc)
+        logger.warning("Could not parse credentials store %s: %s", path, exc)
         return {}
 
 
@@ -112,8 +179,17 @@ def save_credentials(data: dict) -> None:
     """Persist the full credentials/config dict to the store."""
     path = _store_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(data, indent=2, ensure_ascii=False)
+    fernet = _fernet()
+    if fernet is not None:
+        payload = fernet.encrypt(payload.encode("utf-8")).decode("utf-8")
+    else:
+        logger.info(
+            "%s not set -- credentials store written in plaintext (set it to encrypt at rest).",
+            _CREDENTIALS_KEY_ENV,
+        )
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+        f.write(payload)
 
 
 def get_api_key(provider: str) -> str | None:
@@ -149,9 +225,7 @@ def get_configured_providers() -> dict[str, bool]:
     stored_keys = data.get("api_keys", {})
     result = {}
     for provider, env_var in LLM_KEY_ENV_MAP.items():
-        if stored_keys.get(provider):
-            result[provider] = True
-        elif env_var and os.environ.get(env_var):
+        if stored_keys.get(provider) or (env_var and os.environ.get(env_var)):
             result[provider] = True
         else:
             result[provider] = False
