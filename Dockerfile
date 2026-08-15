@@ -70,6 +70,9 @@ ENV PATH="/opt/venv/bin:$PATH"
 #   docker build --build-arg INSTALL_AGENT_CLIS=0 ...
 # Each agent also needs its provider API key at runtime (ANTHROPIC_API_KEY,
 # OPENAI_API_KEY, GEMINI_API_KEY, ...) set via Coolify environment variables.
+# The CLI package versions are pinned for reproducible builds -- an unpinned
+# global install re-resolves "latest" whenever this layer rebuilds, so upstream
+# releases can silently break the login/model commands the app depends on.
 # ─────────────────────────────────────────────────────────────────────────────
 ARG INSTALL_AGENT_CLIS=1
 RUN if [ "$INSTALL_AGENT_CLIS" = "1" ]; then \
@@ -80,7 +83,12 @@ os.remove('/tmp/node.tar.gz')" \
       && ln -sf /opt/node-v22.17.0-linux-x64/bin/node /usr/local/bin/node \
       && ln -sf /opt/node-v22.17.0-linux-x64/bin/npm /usr/local/bin/npm \
       && ln -sf /opt/node-v22.17.0-linux-x64/bin/npx /usr/local/bin/npx \
-      && npm install -g --no-audit --no-fund @anthropic-ai/claude-code @openai/codex @google/gemini-cli opencode-ai; \
+      && npm install -g --no-audit --no-fund \
+           @anthropic-ai/claude-code@2.1.233 \
+           @openai/codex@0.147.0 \
+           @google/gemini-cli@0.55.1 \
+           opencode-ai@1.18.18 \
+      && npm cache clean --force; \
     fi
 
 # Agent config dirs for the CLI integrations (Claude Code, Codex, Gemini,

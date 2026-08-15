@@ -144,6 +144,8 @@ The project is configured for containerized deployment:
 
 > **Coolify 1-hour build limits:** The build uses `uv` (parallel, streams progress) and caches the dependency layer across builds. On slow network links (~80 kB/s measured on one host) the **first** build's image + PyPI downloads can approach the 1-hour queue timeout, so if the first deploy still times out, re-deploy once — Docker will reuse the layers already downloaded and the second build completes quickly. Keep the **Build Timeout** at `3600` seconds (1 hour) as it already is.
 
+> **Coolify "exit code 255" mid-build (long builds killed at a random step):** every Coolify command — even on a `localhost` server — runs over one shared, multiplexed SSH connection. When that connection is older than 30 minutes (`SSH_MUX_MAX_AGE`), the next Coolify job to touch it runs `ssh -O exit`, which terminates the master **and any in-flight deployment**, so the build dies with `Command execution failed (exit code 255)` and BuildKit reports `context canceled` — typically during the long, silent final `exporting to image` phase ([coollabsio/coolify#10853](https://github.com/coollabsio/coolify/issues/10853)). The Dockerfile is fine; the fix is on the Coolify host: add `SSH_MUX_MAX_AGE=86400` to `/data/coolify/.env` (and, if a build's downloads exceed an hour, `SSH_COMMAND_TIMEOUT=7200`) and restart the Coolify container. That shrinks the kill window from every 30 minutes to once a day. Re-deploy after restarting — Docker reuses the layers from the failed build, so the retry is fast.
+
 ---
 
 ## 📦 Python Usage
