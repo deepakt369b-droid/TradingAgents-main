@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from typing import Tuple
-from .order_models import AccountBalance, Order, Position
+from .order_models import AccountBalance, Order, OrderSide, Position
 
 logger = logging.getLogger(__name__)
 
@@ -41,15 +41,21 @@ class RiskGuards:
         if len(positions) >= self.max_open_positions and order.symbol not in [p.symbol for p in positions]:
             return False, f"Open positions limit reached ({self.max_open_positions}). Order rejected."
 
-        # 3. Position size limit (% of total portfolio)
-        trade_value = order.quantity * (order.price or estimated_price)
-        max_allowed_value = account.portfolio_value * self.max_position_pct
+        # 3. Position size limit (% of total portfolio) -- BUY only. A SELL
+        # reduces or exits exposure; blocking it because the position being
+        # sold is larger than the cap would trap the account in the exact
+        # oversized position this guard exists to prevent (found while
+        # wiring RiskGuards into SignalBridge: a full exit of a position
+        # that had grown past max_position_pct was being rejected).
+        if order.side == OrderSide.BUY:
+            trade_value = order.quantity * (order.price or estimated_price)
+            max_allowed_value = account.portfolio_value * self.max_position_pct
 
-        if trade_value > max_allowed_value and account.portfolio_value > 0:
-            return False, (
-                f"Order value (${trade_value:.2f}) exceeds maximum position limit of "
-                f"{self.max_position_pct * 100:.1f}% of portfolio (${max_allowed_value:.2f})."
-            )
+            if trade_value > max_allowed_value and account.portfolio_value > 0:
+                return False, (
+                    f"Order value (${trade_value:.2f}) exceeds maximum position limit of "
+                    f"{self.max_position_pct * 100:.1f}% of portfolio (${max_allowed_value:.2f})."
+                )
 
         # 4. Daily Drawdown Circuit Breaker
         if account.unrealized_pnl < -(account.portfolio_value * self.max_daily_loss_pct):

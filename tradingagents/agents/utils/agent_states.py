@@ -60,6 +60,12 @@ class AgentState(MessagesState):
     ]
     fundamentals_report: Annotated[str, "Report from the Fundamentals Researcher"]
 
+    # Quick-model compression of the four analyst reports above, consumed by
+    # the debate/risk nodes instead of the full reports (see EvidenceDigest
+    # in agents/schemas.py). Full reports are still written to disk in full;
+    # this only changes what's re-fed into the debate layer on every turn.
+    evidence_digest: Annotated[str, "Compressed evidence digest for the debate/risk layer"]
+
     # researcher team discussion step
     investment_debate_state: Annotated[
         InvestDebateState, "Current state of the debate on if to invest or not"

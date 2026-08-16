@@ -79,6 +79,46 @@ class ResilientLLMGateway:
         self.circuit_threshold = circuit_threshold
         self.cooldown = cooldown
 
+    def get_llm(self) -> "ResilientLLMGateway":
+        """Return self: the gateway itself stands in for the underlying chat model.
+
+        ``TradingAgentsGraph`` calls ``client.get_llm()`` on every
+        ``BaseLLMClient`` it constructs, then uses the result as a LangChain
+        chat model (``bind_tools``, ``with_structured_output``, ``invoke``).
+        Returning ``self`` here — combined with ``bind_tools``/
+        ``with_structured_output`` below — lets a gateway-wrapped client slot
+        into that same call pattern instead of erroring with
+        ``AttributeError`` the first time an agent binds tools.
+        """
+        return self
+
+    def _resolve(self, client: Any) -> Any:
+        """Return the underlying chat-model object for a client or gateway member."""
+        return client.get_llm() if hasattr(client, "get_llm") else client
+
+    def bind_tools(self, tools: list[Any], **kwargs: Any) -> "ResilientLLMGateway":
+        """Bind tools on every underlying client, preserving the fallback chain."""
+        bound_primary = self._resolve(self.primary_client).bind_tools(tools, **kwargs)
+        bound_fallbacks = [
+            self._resolve(c).bind_tools(tools, **kwargs) for c in self.fallback_clients
+        ]
+        return ResilientLLMGateway(
+            bound_primary, bound_fallbacks, self.circuit_threshold, self.cooldown
+        )
+
+    def with_structured_output(self, schema: Any, **kwargs: Any) -> "ResilientLLMGateway":
+        """Bind structured output on every underlying client, preserving the fallback chain."""
+        structured_primary = self._resolve(self.primary_client).with_structured_output(
+            schema, **kwargs
+        )
+        structured_fallbacks = [
+            self._resolve(c).with_structured_output(schema, **kwargs)
+            for c in self.fallback_clients
+        ]
+        return ResilientLLMGateway(
+            structured_primary, structured_fallbacks, self.circuit_threshold, self.cooldown
+        )
+
     def _get_circuit(self, provider: str) -> CircuitBreaker:
         if provider not in self.circuits:
             self.circuits[provider] = CircuitBreaker(

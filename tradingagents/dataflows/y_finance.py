@@ -5,6 +5,7 @@ import pandas as pd
 import yfinance as yf
 from dateutil.relativedelta import relativedelta
 
+from .config import get_config
 from .stockstats_utils import (
     StockstatsUtils,
     _assert_ohlcv_not_stale,
@@ -57,6 +58,17 @@ def get_YFin_data_online(
         if col in data.columns:
             data[col] = data[col].round(2)
 
+    # Cap by ROW COUNT (keep the most recent rows), not by truncating the
+    # serialized string -- start_date/end_date are agent-chosen with no
+    # upstream bound, so a wide range would otherwise serialize the full
+    # history into the prompt uncapped. Recency is what matters most for a
+    # "current market snapshot" read, so the cut keeps the tail.
+    total_rows = len(data)
+    max_rows = get_config().get("max_ohlcv_rows")
+    truncated = isinstance(max_rows, int) and max_rows > 0 and total_rows > max_rows
+    if truncated:
+        data = data.tail(max_rows)
+
     # Convert DataFrame to CSV string
     csv_string = data.to_csv()
 
@@ -64,7 +76,12 @@ def get_YFin_data_online(
     # agent (and user) can see which instrument was actually priced.
     label = canonical if canonical == symbol.upper() else f"{canonical} (from {symbol})"
     header = f"# Stock data for {label} from {start_date} to {end_date}\n"
-    header += f"# Total records: {len(data)}\n"
+    header += f"# Total records: {total_rows}\n"
+    if truncated:
+        header += (
+            f"# NOTE: requested range had {total_rows} rows; "
+            f"showing the most recent {max_rows}. Narrow the date range for full detail.\n"
+        )
     header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
 
     return header + csv_string
@@ -156,6 +173,15 @@ def get_stock_stats_indicators_window(
             f"Indicator {indicator} is not supported. Please choose from: {list(best_ind_params.keys())}"
         )
 
+    # Clamp by ROW COUNT (one line per calendar day, so this is directly
+    # proportional to look_back_days) -- an agent-chosen window has no
+    # upstream bound otherwise. Never truncate the serialized result string;
+    # clamp the requested window before building it instead.
+    max_days = get_config().get("max_indicator_days")
+    requested_days = look_back_days
+    if isinstance(max_days, int) and max_days > 0 and look_back_days > max_days:
+        look_back_days = max_days
+
     end_date = curr_date
     curr_date_dt = datetime.strptime(curr_date, "%Y-%m-%d")
     before = curr_date_dt - relativedelta(days=look_back_days)
@@ -205,6 +231,11 @@ def get_stock_stats_indicators_window(
         + "\n\n"
         + best_ind_params.get(indicator, "No description available.")
     )
+    if requested_days > look_back_days:
+        result_str += (
+            f"\n\n# NOTE: requested look_back_days={requested_days} was capped to "
+            f"{look_back_days}. Request a later curr_date for a narrower window instead."
+        )
 
     return result_str
 

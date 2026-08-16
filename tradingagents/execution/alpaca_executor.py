@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import logging
 from .base_executor import BaseExecutor
+from .live_gate import is_live_trading_enabled
 from .order_models import AccountBalance, Order, OrderResult, OrderSide, OrderStatus, Position
 
 logger = logging.getLogger(__name__)
@@ -17,7 +18,11 @@ class AlpacaExecutor(BaseExecutor):
         super().__init__(config)
         self.api_key = api_key or os.environ.get("ALPACA_API_KEY")
         self.secret_key = secret_key or os.environ.get("ALPACA_SECRET_KEY")
-        self.paper = paper
+        # Paper-first gate: a caller can request paper=False, but that's only
+        # honored when the user has explicitly opted into live trading via
+        # TRADINGAGENTS_LIVE_TRADING_ENABLED (#4a) -- `paper` alone is not
+        # trusted as the sole guard against accidentally trading real money.
+        self.paper = paper or not is_live_trading_enabled()
         self._client = None
 
     def _get_client(self):
@@ -39,21 +44,23 @@ class AlpacaExecutor(BaseExecutor):
 
         side = AlpacaOrderSide.BUY if order.side == OrderSide.BUY else AlpacaOrderSide.SELL
 
+        # client_order_id is forwarded as defense-in-depth idempotency:
+        # Alpaca rejects a duplicate within its own dedup window. Correctness
+        # does not depend on this -- the caller's OrderLedger check (see
+        # execution/order_ledger.py) is authoritative.
+        common_kwargs = dict(
+            symbol=order.symbol,
+            qty=order.quantity,
+            side=side,
+            time_in_force=TimeInForce.DAY,
+        )
+        if order.client_order_id:
+            common_kwargs["client_order_id"] = order.client_order_id
+
         if order.order_type == "limit" and order.price:
-            req = LimitOrderRequest(
-                symbol=order.symbol,
-                qty=order.quantity,
-                side=side,
-                time_in_force=TimeInForce.DAY,
-                limit_price=order.price,
-            )
+            req = LimitOrderRequest(limit_price=order.price, **common_kwargs)
         else:
-            req = MarketOrderRequest(
-                symbol=order.symbol,
-                qty=order.quantity,
-                side=side,
-                time_in_force=TimeInForce.DAY,
-            )
+            req = MarketOrderRequest(**common_kwargs)
 
         alpaca_order = client.submit_order(req)
         return OrderResult(

@@ -3,8 +3,21 @@ services:
     build: .
     ports:
       - "8000:8000"
+    environment:
+      # Explicit, not host-inherited -- the worker's cron schedule is UTC
+      # (TRADINGAGENTS_WORKER_CRON), so market-hours logic must not silently
+      # depend on the container host's local timezone.
+      - TZ=${TZ:-UTC}
     env_file:
       - .env
+    extra_hosts:
+      # Reach Ollama running directly on this machine (not the `ollama`
+      # compose service below) via OLLAMA_BASE_URL=http://host.docker.internal:11434/v1
+      # -- e.g. set TRADINGAGENTS_QUICK_PROVIDER=ollama in .env for a
+      # host-Ollama quick-thinking role alongside a cloud deep-thinking
+      # provider. Ollama must bind 0.0.0.0 (OLLAMA_HOST=0.0.0.0), not just
+      # loopback, or the container cannot reach it.
+      - "host.docker.internal:host-gateway"
     volumes:
       - tradingagents_data:/home/appuser/.tradingagents
       - tradingagents_config:/home/appuser/app/config
@@ -15,6 +28,30 @@ services:
       - tradingagents_opencode:/home/appuser/.local/share/opencode
     tty: true
     stdin_open: true
+
+  # Scheduled worker (app/worker.py): analyzes TRADINGAGENTS_WATCHLIST on a
+  # cron schedule and bridges completed decisions to EXECUTION_PLATFORM
+  # (default "paper" -- see execution/live_gate.py for the live-trading gate).
+  # Behind the "worker" profile since most local dev doesn't need it running:
+  # `docker compose --profile worker up`.
+  worker:
+    build: .
+    command: >
+      sh -c "pip install --no-cache-dir 'apscheduler>=3.10,<4' 'exchange_calendars>=4.5' && python -m app.worker"
+    environment:
+      - TZ=${TZ:-UTC}
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Shared with the `tradingagents` service: checkpoints, the
+      # paper-portfolio ledger, and the order ledger must be the SAME
+      # volume both services see.
+      - tradingagents_data:/home/appuser/.tradingagents
+      - tradingagents_config:/home/appuser/app/config
+    profiles:
+      - worker
 
   ollama:
     image: ollama/ollama:latest

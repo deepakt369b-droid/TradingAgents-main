@@ -995,7 +995,7 @@ def run_analysis(checkpoint: bool | None = None):
     config = _build_run_config(selections, checkpoint)
 
     # Create stats callback handler for tracking LLM/tool calls
-    stats_handler = StatsCallbackHandler()
+    stats_handler = StatsCallbackHandler(token_budget=config.get("token_budget_per_run"))
 
     # Normalize analyst selection to predefined order (selection is a 'set', order is fixed)
     selected_set = {analyst.value for analyst in selections["analysts"]}
@@ -1286,6 +1286,44 @@ def analyze(
         n = clear_all_checkpoints(DEFAULT_CONFIG["data_cache_dir"])
         console.print(f"[yellow]Cleared {n} checkpoint(s).[/yellow]")
     run_analysis(checkpoint=checkpoint)
+
+
+@app.command(name="list-runs")
+def list_runs(
+    status: str = typer.Option(
+        "parked", "--status",
+        help="Filter by status: parked (default), resumed, or cleared.",
+    ),
+):
+    """List runs parked after a quota/rate-limit failure.
+
+    A parked run's checkpoint is intact -- re-run `analyze` with the same
+    ticker and date (optionally after changing TRADINGAGENTS_DEEP_PROVIDER /
+    TRADINGAGENTS_QUICK_PROVIDER in your environment) to resume it from the
+    last completed node instead of starting over.
+    """
+    from tradingagents.graph import run_registry
+
+    runs = run_registry.list_parked_runs(DEFAULT_CONFIG["data_cache_dir"], status=status)
+    if not runs:
+        console.print(f"[dim]No {status} runs.[/dim]")
+        return
+
+    from rich.table import Table
+    table = Table(title=f"{status.capitalize()} runs")
+    table.add_column("Ticker")
+    table.add_column("Date")
+    table.add_column("Step")
+    table.add_column("Failed role")
+    table.add_column("Failed provider")
+    table.add_column("Error")
+    for run in runs:
+        table.add_row(
+            run["ticker"], run["trade_date"], str(run["step"]),
+            run["failed_role"] or "-", run["failed_provider"] or "-",
+            (run["error_message"] or "")[:80],
+        )
+    console.print(table)
 
 
 if __name__ == "__main__":

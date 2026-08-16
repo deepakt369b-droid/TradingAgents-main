@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import logging
 from .base_executor import BaseExecutor
+from .live_gate import is_live_trading_enabled
 from .order_models import AccountBalance, Order, OrderResult, OrderSide, OrderStatus, Position
 
 logger = logging.getLogger(__name__)
@@ -38,7 +39,24 @@ class CCXTExecutor(BaseExecutor):
                     "secret": self.secret_key or "",
                     "enableRateLimit": True,
                 })
-                logger.info("Initialized CCXT exchange instance for '%s'.", self.exchange_id)
+                # Paper-first gate: sandbox/testnet unless the user has
+                # explicitly opted into live trading (TRADINGAGENTS_LIVE_
+                # TRADING_ENABLED). Without this, the moment CCXT_API_KEY is
+                # set this trades real money on the live exchange (#4a).
+                live = is_live_trading_enabled()
+                if hasattr(self._exchange, "set_sandbox_mode"):
+                    self._exchange.set_sandbox_mode(not live)
+                elif not live:
+                    raise RuntimeError(
+                        f"CCXT exchange '{self.exchange_id}' has no sandbox mode and "
+                        "TRADINGAGENTS_LIVE_TRADING_ENABLED is not set -- refusing to "
+                        "construct a live-trading-capable client. Set the env var "
+                        "explicitly to trade live on this exchange."
+                    )
+                logger.info(
+                    "Initialized CCXT exchange instance for '%s' (live=%s).",
+                    self.exchange_id, live,
+                )
             except ImportError:
                 raise ImportError("ccxt package is required for crypto execution. Install with: pip install ccxt")
         return self._exchange
@@ -50,10 +68,16 @@ class CCXTExecutor(BaseExecutor):
         if "/" not in symbol and "USDT" in symbol:
             symbol = symbol.replace("USDT", "/USDT")
 
+        # Forward client_order_id as defense-in-depth idempotency (most
+        # exchanges CCXT wraps accept "clientOrderId" in params and reject a
+        # duplicate within their own dedup window); correctness does not
+        # depend on this, the caller's OrderLedger check is authoritative.
+        params = {"clientOrderId": order.client_order_id} if order.client_order_id else {}
+
         if order.order_type == "limit" and order.price:
-            res = ex.create_limit_order(symbol, side, order.quantity, order.price)
+            res = ex.create_limit_order(symbol, side, order.quantity, order.price, params)
         else:
-            res = ex.create_market_order(symbol, side, order.quantity)
+            res = ex.create_market_order(symbol, side, order.quantity, params=params)
 
         return OrderResult(
             order_id=str(res.get("id")),

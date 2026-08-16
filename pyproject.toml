@@ -64,10 +64,27 @@ build = [
     "pyinstaller>=6.0",
     "Pillow>=11.0",
 ]
+# Live/paper broker execution (tradingagents/execution/). Optional so the
+# core install stays lean -- most users only need the research pipeline.
+# ib_insync/IBKR is deliberately NOT included: it requires a persistent
+# TWS/IB Gateway process, out of scope for a lean Coolify deployment.
+exec = [
+    "ccxt>=4.4.0",
+    "alpaca-py>=0.35.0",
+]
+# Scheduled worker (app/worker.py): runs the pipeline on a cron schedule and
+# bridges completed decisions to the execution platform. exchange_calendars
+# is optional within this extra too -- the worker falls back to a plain
+# weekday check when it's absent.
+worker = [
+    "apscheduler>=3.10,<4",
+    "exchange_calendars>=4.5",
+]
 
 [project.scripts]
 tradingagents = "cli.main:app"
 tradingagents-desktop = "app.launcher:main"
+tradingagents-worker = "app.worker:main"
 
 [tool.setuptools.packages.find]
 include = ["tradingagents*", "cli*", "app*"]

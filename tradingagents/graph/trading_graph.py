@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -32,8 +33,10 @@ from tradingagents.dataflows.config import set_config
 from tradingagents.dataflows.utils import safe_ticker_component
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.llm_clients import create_llm_client
+from tradingagents.llm_clients.llm_errors import RunParkedError, describe_error, is_quota_error
 from tradingagents.reporting import write_report_tree
 
+from . import run_registry
 from .checkpointer import checkpoint_step, clear_checkpoint, get_checkpointer, thread_id
 from .conditional_logic import ConditionalLogic
 from .propagation import Propagator
@@ -42,6 +45,21 @@ from .setup import GraphSetup
 from .signal_processing import SignalProcessor
 
 logger = logging.getLogger(__name__)
+
+# Well-known hosts for the native (non-OpenAI-compatible) providers, used
+# only to disambiguate which role's provider failed when a quota error hits
+# (see TradingAgentsGraph._effective_base_url / _guess_failed_role). Kept
+# separate from api_key_env/openai_client's provider registries because
+# those cover the OpenAI-compatible family only.
+_NATIVE_PROVIDER_HOSTS = {
+    "anthropic": "api.anthropic.com",
+    "google": "generativelanguage.googleapis.com",
+}
+
+# Bump whenever graph_setup.py's node/edge structure changes (see
+# TradingAgentsGraph._run_signature). v2 = Evidence Digest node inserted
+# between the last analyst and Bull Researcher (Phase 3 token reduction).
+_GRAPH_SHAPE_VERSION = "v2"
 
 
 def _coerce_max_retries(value):
@@ -91,28 +109,48 @@ class TradingAgentsGraph:
         os.makedirs(self.config["data_cache_dir"], exist_ok=True)
         os.makedirs(self.config["results_dir"], exist_ok=True)
 
-        # Initialize LLMs with provider-specific thinking configuration
-        llm_kwargs = self._get_provider_kwargs()
+        # Initialize LLMs with provider-specific thinking configuration.
+        # Each role (deep/quick) resolves its own provider and base_url,
+        # falling back to the shared llm_provider/backend_url when the
+        # per-role override is unset (#see per-role provider routing).
+        deep_provider = self.config.get("deep_think_provider") or self.config["llm_provider"]
+        deep_base_url = self.config.get("deep_think_base_url") or self.config.get("backend_url")
+        quick_provider = self.config.get("quick_think_provider") or self.config["llm_provider"]
+        quick_base_url = self.config.get("quick_think_base_url") or self.config.get("backend_url")
+
+        deep_llm_kwargs = self._get_provider_kwargs(deep_provider)
+        quick_llm_kwargs = self._get_provider_kwargs(quick_provider)
 
         # Add callbacks to kwargs if provided (passed to LLM constructor)
         if self.callbacks:
-            llm_kwargs["callbacks"] = self.callbacks
+            deep_llm_kwargs["callbacks"] = self.callbacks
+            quick_llm_kwargs["callbacks"] = self.callbacks
 
         deep_client = create_llm_client(
-            provider=self.config["llm_provider"],
+            provider=deep_provider,
             model=self.config["deep_think_llm"],
-            base_url=self.config.get("backend_url"),
-            **llm_kwargs,
+            base_url=deep_base_url,
+            **deep_llm_kwargs,
         )
         quick_client = create_llm_client(
-            provider=self.config["llm_provider"],
+            provider=quick_provider,
             model=self.config["quick_think_llm"],
-            base_url=self.config.get("backend_url"),
-            **llm_kwargs,
+            base_url=quick_base_url,
+            **quick_llm_kwargs,
         )
 
         self.deep_thinking_llm = deep_client.get_llm()
         self.quick_thinking_llm = quick_client.get_llm()
+
+        # Resolved (provider, host) per role, kept only to disambiguate which
+        # role's LLM call failed on a quota error (see _guess_failed_role).
+        # Uses the *effective* host -- the provider's default endpoint when
+        # no explicit base_url was configured -- since that's what actually
+        # appears in the exception's request URL.
+        self._role_hosts = {
+            "deep": (deep_provider, self._effective_host(deep_provider, deep_base_url)),
+            "quick": (quick_provider, self._effective_host(quick_provider, quick_base_url)),
+        }
 
         self.memory_log = TradingMemoryLog(self.config)
 
@@ -148,12 +186,17 @@ class TradingAgentsGraph:
         # Set up the graph: keep the workflow for recompilation with a checkpointer.
         self.workflow = self.graph_setup.setup_graph(selected_analysts)
         self.graph = self.workflow.compile()
-        self._checkpointer_ctx = None
 
-    def _get_provider_kwargs(self) -> dict[str, Any]:
-        """Get provider-specific kwargs for LLM client creation."""
+    def _get_provider_kwargs(self, provider: str | None = None) -> dict[str, Any]:
+        """Get provider-specific kwargs for LLM client creation.
+
+        ``provider`` selects which role's reasoning/thinking knob applies
+        (deep and quick can now run on different providers); it defaults to
+        the shared ``llm_provider`` for backward compatibility with callers
+        that don't pass one.
+        """
         kwargs = {}
-        provider = self.config.get("llm_provider", "").lower()
+        provider = (provider or self.config.get("llm_provider", "")).lower()
 
         if provider == "google":
             thinking_level = self.config.get("google_thinking_level")
@@ -184,6 +227,66 @@ class TradingAgentsGraph:
             kwargs["max_retries"] = _coerce_max_retries(max_retries)
 
         return kwargs
+
+    @staticmethod
+    def _effective_host(provider: str, explicit_base_url: str | None) -> str | None:
+        """Resolve the host actually used for a provider, for error attribution only.
+
+        Mirrors the base_url precedence in OpenAIClient.get_llm() (explicit >
+        provider default) closely enough to match hosts in an exception's
+        request URL; it intentionally skips the env-var-override step (e.g.
+        OLLAMA_BASE_URL) since that's a bonus-precision detail, not required
+        for the "unknown" fallback to stay safe.
+        """
+        from urllib.parse import urlparse
+
+        url = explicit_base_url
+        if not url:
+            if provider in _NATIVE_PROVIDER_HOSTS:
+                return _NATIVE_PROVIDER_HOSTS[provider]
+            from tradingagents.llm_clients.openai_client import OPENAI_COMPATIBLE_PROVIDERS
+            spec = OPENAI_COMPATIBLE_PROVIDERS.get(provider)
+            url = spec.base_url if spec else None
+        if not url:
+            return None
+        if "://" not in url:
+            url = "https://" + url
+        return urlparse(url).hostname
+
+    def _guess_failed_role(self, exc: BaseException) -> str:
+        """Best-effort attribution of a quota error to "deep", "quick", or "unknown".
+
+        Matches the host in the exception's HTTP request/response URL (openai/
+        anthropic SDK exceptions expose one) against each role's resolved
+        host. Falls back to "unknown" -- rather than guessing -- when the
+        hosts can't be read or both roles share the same host (same
+        provider/endpoint for both roles), since there's nothing to
+        disambiguate in that case.
+        """
+        request_url = None
+        for holder_attr in ("response", "request"):
+            holder = getattr(exc, holder_attr, None)
+            url = getattr(holder, "url", None)
+            if url:
+                request_url = str(url)
+                break
+        if not request_url:
+            return "unknown"
+
+        from urllib.parse import urlparse
+        exc_host = urlparse(request_url).hostname
+        if not exc_host:
+            return "unknown"
+
+        deep_provider, deep_host = self._role_hosts["deep"]
+        quick_provider, quick_host = self._role_hosts["quick"]
+        deep_match = deep_host is not None and deep_host == exc_host
+        quick_match = quick_host is not None and quick_host == exc_host
+        if deep_match and not quick_match:
+            return "deep"
+        if quick_match and not deep_match:
+            return "quick"
+        return "unknown"
 
     def _create_tool_nodes(self) -> dict[str, ToolNode]:
         """Create tool nodes for different data sources using abstract methods."""
@@ -350,14 +453,123 @@ class TradingAgentsGraph:
 
         Keyed into the checkpoint thread ID so a resume under a different analyst
         selection, debate/risk depth, or asset mode starts fresh instead of
-        silently continuing the previous graph (#1089).
+        silently continuing the previous graph (#1089). ``_GRAPH_SHAPE_VERSION``
+        covers structural changes to the compiled workflow itself (nodes
+        added/removed/rewired) that none of the other fields capture --
+        bump it whenever graph_setup.py's node/edge structure changes, so a
+        checkpoint written under the old shape can't be silently resumed
+        against a graph whose edges no longer match what it expects to
+        execute next.
         """
         return "|".join([
+            f"graph={_GRAPH_SHAPE_VERSION}",
             "analysts=" + ",".join(self.selected_analysts),
             f"debate={self.config['max_debate_rounds']}",
             f"risk={self.config['max_risk_discuss_rounds']}",
             f"asset={asset_type}",
         ])
+
+    def resolve_graph_input(self, fresh_state: dict, ticker: str, trade_date, asset_type: str = "stock"):
+        """Return ``None`` when resuming an existing checkpoint, else ``fresh_state``.
+
+        LangGraph only skips already-completed nodes when the resuming
+        ``invoke``/``stream`` call receives ``input=None`` on a thread with an
+        existing checkpoint. Passing a non-None input -- even one identical to
+        the original -- re-executes every node from START, silently
+        re-invoking every already-completed LLM call and defeating the entire
+        point of checkpointing (verified empirically). A thread with no
+        existing checkpoint must still get the fresh state; ``None`` on a
+        thread LangGraph has never seen raises ``EmptyInputError``.
+
+        Shared by ``_run_graph`` and any external driver of ``self.graph``
+        (e.g. the web server's WebSocket handler, which streams the compiled
+        graph directly for per-node UI updates instead of going through
+        ``propagate()``) so both get identical, correct resume semantics.
+        Only meaningful when ``checkpoint_enabled``; returns ``fresh_state``
+        unconditionally otherwise.
+        """
+        if not self.config.get("checkpoint_enabled"):
+            return fresh_state
+        resuming = checkpoint_step(
+            self.config["data_cache_dir"], ticker, str(trade_date), self._run_signature(asset_type),
+        ) is not None
+        return None if resuming else fresh_state
+
+    def park_or_raise(self, exc: BaseException, ticker: str, trade_date, asset_type: str = "stock") -> None:
+        """Classify a run failure; park+raise for a quota error, else return normally.
+
+        Call from an ``except Exception as exc:`` block. Raises
+        ``RunParkedError`` (chained from ``exc``) when ``exc`` is a classified
+        quota/rate-limit failure and checkpointing is enabled -- the
+        checkpoint is already intact (LangGraph only clears it on success)
+        so this only adds a discoverable parked-run record. Otherwise returns
+        normally so the caller can bare ``raise`` to reproduce the original
+        exception with its original traceback; a bug, malformed prompt, or
+        genuine provider outage is not something a resume-under-a-different-
+        provider fixes, so those propagate unchanged.
+        """
+        if not (self.config.get("checkpoint_enabled") and is_quota_error(exc)):
+            return
+        failed_role = self._guess_failed_role(exc)
+        failed_provider = self._role_hosts.get(failed_role, (None, None))[0]
+        sig = self._run_signature(asset_type)
+        tid = thread_id(ticker, str(trade_date), sig)
+        run_registry.park_run(
+            self.config["data_cache_dir"], ticker, str(trade_date), sig, tid,
+            step=checkpoint_step(self.config["data_cache_dir"], ticker, str(trade_date), sig),
+            failed_role=failed_role,
+            failed_provider=failed_provider or "unknown",
+            error_info=describe_error(exc),
+        )
+        logger.warning(
+            "Parked run for %s on %s after quota error (role=%s, provider=%s): %s",
+            ticker, trade_date, failed_role, failed_provider, exc,
+        )
+        raise RunParkedError(
+            ticker, str(trade_date), tid, failed_role, failed_provider or "unknown", exc,
+        ) from exc
+
+    def conclude_checkpointed_run(self, ticker: str, trade_date, asset_type: str = "stock") -> None:
+        """Clear the checkpoint and mark any parked-run record resolved after a successful run.
+
+        A no-op when checkpointing is off, or when this run was never
+        parked -- ``mark_run_resolved`` only touches an existing row.
+        """
+        if not self.config.get("checkpoint_enabled"):
+            return
+        sig = self._run_signature(asset_type)
+        clear_checkpoint(self.config["data_cache_dir"], ticker, str(trade_date), sig)
+        run_registry.mark_run_resolved(
+            self.config["data_cache_dir"], ticker, str(trade_date), sig, status="resumed"
+        )
+
+    @contextmanager
+    def checkpointed(self, ticker: str):
+        """Recompile ``self.graph`` with a per-ticker checkpointer for the duration of the block.
+
+        A no-op (``self.graph`` unchanged) when ``checkpoint_enabled`` is
+        False. Restores the checkpointer-less compiled graph on exit either
+        way, so a caller that reuses this ``TradingAgentsGraph`` instance for
+        another ticker afterward isn't left pinned to this ticker's DB.
+
+        Shared by ``propagate()`` and any external driver of ``self.graph``
+        (the web server's WebSocket handler streams the compiled graph
+        directly for per-node UI updates instead of calling ``propagate()``)
+        so every entry point gets a real checkpointer -- setting
+        ``checkpoint_enabled`` in config is otherwise silently inert for a
+        caller that only ever reads ``self.graph`` without opening this.
+        """
+        if not self.config.get("checkpoint_enabled"):
+            yield
+            return
+        ctx = get_checkpointer(self.config["data_cache_dir"], ticker)
+        saver = ctx.__enter__()
+        try:
+            self.graph = self.workflow.compile(checkpointer=saver)
+            yield
+        finally:
+            ctx.__exit__(None, None, None)
+            self.graph = self.workflow.compile()
 
     def propagate(self, company_name, trade_date, asset_type: str = "stock"):
         """Run the trading agents graph for a company on a specific date.
@@ -367,39 +579,26 @@ class TradingAgentsGraph:
         from the ticker; programmatic callers pass it explicitly. When
         ``checkpoint_enabled`` is set in config, the graph is recompiled with
         a per-ticker SqliteSaver so a crashed run can resume from the last
-        successful node on a subsequent invocation with the same ticker+date.
+        successful node on a subsequent invocation with the same ticker+date
+        -- including under a different per-role provider than the run that
+        failed, since neither the checkpoint thread ID nor the checkpointed
+        state depends on which model produced it.
         """
         self.ticker = company_name
 
         # Resolve any pending memory-log entries for this ticker before the pipeline runs.
         self._resolve_pending_entries(company_name)
 
-        # Recompile with a checkpointer if the user opted in.
-        if self.config.get("checkpoint_enabled"):
-            self._checkpointer_ctx = get_checkpointer(
-                self.config["data_cache_dir"], company_name
-            )
-            saver = self._checkpointer_ctx.__enter__()
-            self.graph = self.workflow.compile(checkpointer=saver)
-
+        with self.checkpointed(company_name):
             step = checkpoint_step(
                 self.config["data_cache_dir"], company_name, str(trade_date),
                 self._run_signature(asset_type),
-            )
+            ) if self.config.get("checkpoint_enabled") else None
             if step is not None:
-                logger.info(
-                    "Resuming from step %d for %s on %s", step, company_name, trade_date
-                )
-            else:
+                logger.info("Resuming from step %d for %s on %s", step, company_name, trade_date)
+            elif self.config.get("checkpoint_enabled"):
                 logger.info("Starting fresh for %s on %s", company_name, trade_date)
-
-        try:
             return self._run_graph(company_name, trade_date, asset_type=asset_type)
-        finally:
-            if self._checkpointer_ctx is not None:
-                self._checkpointer_ctx.__exit__(None, None, None)
-                self._checkpointer_ctx = None
-                self.graph = self.workflow.compile()
 
     def save_reports(self, final_state, ticker, save_path=None) -> Path:
         """Write the markdown report tree for a completed run, like the CLI does.
@@ -432,32 +631,43 @@ class TradingAgentsGraph:
         args = self.propagator.get_graph_args()
 
         # Inject thread_id so same ticker+date+graph-shape resumes; a different
-        # date or graph shape starts fresh (#1089).
+        # date or graph shape starts fresh (#1089). graph_input is None on
+        # resume -- see resolve_graph_input for why that matters.
         if self.config.get("checkpoint_enabled"):
             tid = thread_id(company_name, str(trade_date), self._run_signature(asset_type))
             args.setdefault("config", {}).setdefault("configurable", {})["thread_id"] = tid
+        graph_input = self.resolve_graph_input(init_agent_state, company_name, trade_date, asset_type)
 
-        if self.debug:
-            trace = []
-            last_printed = None
-            for chunk in self.graph.stream(init_agent_state, **args):
-                if chunk["messages"]:
-                    msg = chunk["messages"][-1]
-                    # Nodes after the trader don't append to messages, so the
-                    # same trailing message repeats across chunks. Print it only
-                    # when it changes (#1027); the trace/state merge is unchanged.
-                    signature = (type(msg).__name__, getattr(msg, "content", None))
-                    if signature != last_printed:
-                        msg.pretty_print()
-                        last_printed = signature
-                    trace.append(chunk)
-            # Streamed chunks are per-node deltas. Merge them so the returned
-            # state matches what graph.invoke() yields in the non-debug path.
-            final_state = {}
-            for chunk in trace:
-                final_state.update(chunk)
-        else:
-            final_state = self.graph.invoke(init_agent_state, **args)
+        try:
+            if self.debug:
+                trace = []
+                last_printed = None
+                for chunk in self.graph.stream(graph_input, **args):
+                    if chunk["messages"]:
+                        msg = chunk["messages"][-1]
+                        # Nodes after the trader don't append to messages, so the
+                        # same trailing message repeats across chunks. Print it only
+                        # when it changes (#1027); the trace/state merge is unchanged.
+                        signature = (type(msg).__name__, getattr(msg, "content", None))
+                        if signature != last_printed:
+                            msg.pretty_print()
+                            last_printed = signature
+                        trace.append(chunk)
+                # Streamed chunks are per-node deltas. Merge them so the returned
+                # state matches what graph.invoke() yields in the non-debug path.
+                final_state = {}
+                for chunk in trace:
+                    final_state.update(chunk)
+            else:
+                final_state = self.graph.invoke(graph_input, **args)
+        except Exception as exc:
+            # A quota/rate-limit failure is recoverable and gets parked (see
+            # park_or_raise); anything else propagates with its original
+            # traceback. The checkpoint is intact either way -- LangGraph
+            # only clears it on success -- so a plain retry works even for
+            # the non-parked case.
+            self.park_or_raise(exc, company_name, trade_date, asset_type)
+            raise
 
         # Store current state for reflection.
         self.curr_state = final_state
@@ -472,12 +682,7 @@ class TradingAgentsGraph:
             final_trade_decision=final_state["final_trade_decision"],
         )
 
-        # Clear checkpoint on successful completion to avoid stale state.
-        if self.config.get("checkpoint_enabled"):
-            clear_checkpoint(
-                self.config["data_cache_dir"], company_name, str(trade_date),
-                self._run_signature(asset_type),
-            )
+        self.conclude_checkpointed_run(company_name, trade_date, asset_type)
 
         return final_state, self.process_signal(final_state["final_trade_decision"])
 
@@ -490,6 +695,7 @@ class TradingAgentsGraph:
             "sentiment_report": final_state["sentiment_report"],
             "news_report": final_state["news_report"],
             "fundamentals_report": final_state["fundamentals_report"],
+            "evidence_digest": final_state.get("evidence_digest", ""),
             "investment_debate_state": {
                 "bull_history": final_state["investment_debate_state"]["bull_history"],
                 "bear_history": final_state["investment_debate_state"]["bear_history"],

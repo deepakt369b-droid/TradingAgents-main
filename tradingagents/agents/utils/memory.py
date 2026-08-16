@@ -3,6 +3,7 @@
 import re
 from pathlib import Path
 
+from tradingagents.agents.utils.lesson_similarity import rank_by_relevance
 from tradingagents.agents.utils.rating import parse_rating
 
 
@@ -68,22 +69,48 @@ class TradingMemoryLog:
         return [e for e in self.load_entries() if e.get("pending")]
 
     def get_past_context(self, ticker: str, n_same: int = 5, n_cross: int = 3) -> str:
-        """Return formatted past context string for agent prompt injection."""
+        """Return formatted past context string for agent prompt injection.
+
+        Same-ticker entries are exact-match, most-recent-first -- a ticker's
+        own history is always the right thing to show for that ticker.
+        Cross-ticker "lessons learned" are ranked by TF-IDF relevance to this
+        ticker's own history (see ``lesson_similarity.rank_by_relevance``)
+        within a recency-bounded candidate pool, so a lesson about a
+        similarly-themed name (shared sector, catalyst, or risk language)
+        surfaces ahead of an unrelated one that merely resolved more
+        recently. Falls back to plain recency when there's no same-ticker
+        history yet to rank against (first time this ticker is analyzed).
+        """
         entries = [e for e in self.load_entries() if not e.get("pending")]
         if not entries:
             return ""
 
-        same, cross = [], []
+        same: list[dict] = []
+        cross_pool: list[dict] = []
+        # Candidate pool is wider than n_cross so relevance ranking has
+        # something to choose among; recency-bounded so a large log doesn't
+        # turn this into an O(log size) scan every run.
+        pool_cap = max(n_cross * 5, 15)
         for e in reversed(entries):
-            if len(same) >= n_same and len(cross) >= n_cross:
+            if len(same) >= n_same and len(cross_pool) >= pool_cap:
                 break
             if e["ticker"] == ticker and len(same) < n_same:
                 same.append(e)
-            elif e["ticker"] != ticker and len(cross) < n_cross:
-                cross.append(e)
+            elif e["ticker"] != ticker and len(cross_pool) < pool_cap:
+                cross_pool.append(e)
 
-        if not same and not cross:
+        if not same and not cross_pool:
             return ""
+
+        cross = cross_pool[:n_cross]  # recency fallback
+        if same and cross_pool:
+            query_text = " ".join(f"{e['decision']} {e['reflection']}" for e in same)
+            candidates = [
+                (i, f"{e['decision']} {e['reflection']}") for i, e in enumerate(cross_pool)
+            ]
+            ranked_indices = rank_by_relevance(query_text, candidates, n_cross)
+            if ranked_indices:
+                cross = [cross_pool[i] for i in ranked_indices]
 
         parts = []
         if same:

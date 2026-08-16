@@ -284,6 +284,53 @@ class TestTradingMemoryLogCore:
         assert "AAPL" not in ctx
         assert "META" in ctx
 
+    def test_cross_ticker_ranked_by_relevance_not_recency_when_same_ticker_history_exists(
+        self, tmp_path
+    ):
+        """A thematically relevant but older cross-ticker lesson must outrank
+        a more recent but unrelated one, once there's same-ticker history to
+        rank against (Phase 3 memory addition)."""
+        log = make_log(tmp_path)
+        # NVDA's own history establishes the "query" -- semiconductor / AI capex themed.
+        _seed_completed(
+            tmp_path, "NVDA", "2026-01-01",
+            "Buy NVDA — semiconductor AI capex cycle intact, datacenter demand strong.",
+            "Correct call; capex cycle held.",
+        )
+        # Older but thematically relevant.
+        _seed_completed(
+            tmp_path, "AMD", "2026-01-02",
+            "Sell AMD — semiconductor datacenter AI capex demand weaker than peers.",
+            "Semiconductor AI capex theme played out as expected.",
+        )
+        # More recent but unrelated.
+        _seed_completed(
+            tmp_path, "DAL", "2026-01-10",
+            "Hold DAL — airline fuel cost headwinds, unrelated to chip demand.",
+            "Fuel costs stayed elevated as expected.",
+        )
+        ctx = log.get_past_context("NVDA", n_same=5, n_cross=1)
+        assert "AMD" in ctx
+        assert "DAL" not in ctx
+
+    def test_cross_ticker_falls_back_to_recency_with_no_same_ticker_history(self, tmp_path):
+        # First-ever run for this ticker: nothing to rank against, so the
+        # existing recency-based behavior must still apply.
+        log = make_log(tmp_path)
+        _seed_completed(
+            tmp_path, "AMD", "2026-01-02",
+            "Sell AMD — semiconductor datacenter AI capex demand weaker than peers.",
+            "Correct.",
+        )
+        _seed_completed(
+            tmp_path, "DAL", "2026-01-10",
+            "Hold DAL — airline fuel cost headwinds.",
+            "Correct.",
+        )
+        ctx = log.get_past_context("NVDA", n_same=5, n_cross=1)
+        assert "DAL" in ctx  # most recent, since there's no query to rank against
+        assert "AMD" not in ctx
+
     # No-op when config is None
 
     def test_no_log_path_is_noop(self):

@@ -35,6 +35,14 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
         analysts_dir.mkdir(exist_ok=True)
         (analysts_dir / "fundamentals.md").write_text(final_state["fundamentals_report"], encoding="utf-8")
         analyst_parts.append(("Fundamentals Analyst", final_state["fundamentals_report"]))
+    if final_state.get("evidence_digest"):
+        # Compressed version of the four reports above, fed to the debate/risk
+        # layer instead of the full reports (see agents/evidence_digest.py).
+        # Saved alongside them so a reader can see exactly what the debate
+        # agents actually saw.
+        analysts_dir.mkdir(exist_ok=True)
+        (analysts_dir / "evidence_digest.md").write_text(final_state["evidence_digest"], encoding="utf-8")
+        analyst_parts.append(("Evidence Digest", final_state["evidence_digest"]))
     if analyst_parts:
         content = "\n\n".join(f"### {name}\n{text}" for name, text in analyst_parts)
         sections.append(f"## I. Analyst Team Reports\n\n{content}")

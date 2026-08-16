@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Breaking changes within the 0.x line are called out explicitly.
 
+## [Unreleased]
+
+Personal-automation extension: per-role LLM providers, quota-aware run parking, token-reduction in the debate layer, and paper/live trade execution with a scheduled worker.
+
+### Added
+
+- **Per-role LLM provider routing.** `deep_think_provider`/`quick_think_provider` (and matching `*_base_url`) let deep-thinking and quick-thinking calls run on different providers (e.g. Kimi for deep reasoning, local Ollama for the high-volume quick calls). Both unset falls back to the existing single-provider `llm_provider` — fully backward compatible. New web UI toggle ("Use a different provider for Quick Thinking"); CLI picks this up automatically via the existing env-var precedence.
+- **Quota-aware run parking.** A classified provider quota/rate-limit failure (or an optional `TRADINGAGENTS_TOKEN_BUDGET_PER_RUN` ceiling) parks a checkpointed run instead of crashing it — the checkpoint stays intact and the failure is recorded in a new run registry. `tradingagents list-runs` / `GET /api/runs` / `POST /api/runs/clear` discover and manage parked runs. Resuming (same ticker+date, optionally under a different provider) continues from the last completed node rather than restarting.
+- **Evidence Digest node.** Compresses the four analyst reports into one structured digest via a single quick-model call before the bull/bear and risk debates, which previously re-sent all four full reports on every debate/risk turn. Full reports are unaffected everywhere else (disk logs, report tree).
+- **Bounded debate history**, row caps on agent-controlled OHLCV/indicator tool calls (cut by row count, never string truncation), and an optional per-run token budget guard — all reducing token spend on debate-heavy or wide-date-range runs.
+- **Cross-ticker memory relevance ranking.** The decision log's "lessons learned" from other tickers are now ranked by TF-IDF relevance to the current ticker's own history instead of pure recency (no new dependency, no LLM call).
+- **Trade execution** (`tradingagents/execution/`, install with `pip install ".[exec]"`): Alpaca (US equities) and CCXT (crypto) executors, wired behind a paper-first gate (`TRADINGAGENTS_LIVE_TRADING_ENABLED`, default off) plus a kill-switch file. `PaperExecutor` now persists to SQLite (previously in-memory only). Deterministic, non-LLM position sizing (`SignalBridge`) with idempotent order submission and `RiskGuards` pre-trade checks.
+- **Scheduled worker** (`app/worker.py`, install with `pip install ".[worker]"`): runs the pipeline against a `TRADINGAGENTS_WATCHLIST` on a cron schedule, market-calendar aware, isolating each ticker's failure from the rest of the watchlist. New `worker` service in both compose files, sharing the web service's data volume.
+- **Optional AI-Trader signal sync** (`tradingagents/integrations/ai_trader_client.py`): a thin REST client that posts completed decisions to an AI-Trader instance's leaderboard/copy-trade API. Not vendored code — see the module docstring for why.
+
+### Fixed
+
+- **Resume was silently re-executing every already-completed node.** Production code always passed a fresh (non-`None`) initial state on "resume," which causes LangGraph to restart from `START` rather than skip completed work — verified empirically. Checkpointed resume now correctly passes `None` once a prior checkpoint exists, for both the CLI/programmatic path and the web UI's WebSocket handler (which streams the compiled graph directly and had never been wired to a checkpointer at all, making `checkpoint_enabled` silently inert there).
+- **`RiskGuards`' position-size cap was rejecting SELL orders that reduced an oversized position** — backwards, since exiting risk should never be blocked by the guard meant to prevent it.
+- **`ResilientLLMGateway` (multi-provider fallback) was missing `get_llm()`/`bind_tools()`/`with_structured_output()`**, so any caller that enabled `fallback_providers` would crash on the first tool binding.
+- CCXT executor had no sandbox/testnet mode — the moment `CCXT_API_KEY` was set it traded live Binance.
+
 ## [0.3.1] — 2026-08-16
 
 Upstream correctness/stability patch plus Coolify build fix.

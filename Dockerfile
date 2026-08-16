@@ -62,6 +62,23 @@ COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Optional broker/exchange execution deps (tradingagents/execution/) for live
+# or sandbox order placement via Alpaca (US equities) or CCXT (crypto).
+#
+# DEFAULT IS 0: the paper-trading path (PaperExecutor) needs neither package
+# -- it's stdlib sqlite3 + pydantic, already installed -- so a research-only
+# or paper-only deployment stays lean. Enable when actually wiring up a
+# broker:
+#   docker build --build-arg INSTALL_EXEC_DEPS=1 ...
+# IBKR/ib_insync is deliberately not offered here -- it requires a
+# persistent TWS/IB Gateway process, out of scope for this image.
+# ─────────────────────────────────────────────────────────────────────────────
+ARG INSTALL_EXEC_DEPS=0
+RUN if [ "$INSTALL_EXEC_DEPS" = "1" ]; then \
+      pip install --no-cache-dir "ccxt>=4.4.0" "alpaca-py>=0.35.0"; \
+    fi
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Optional CLI agent integrations ("Agent Skills"): Claude Code, OpenAI Codex,
 # Gemini CLI, OpenCode. These run headlessly inside the container when enabled
 # in the app's CLI Integrations section, so they are installed here.

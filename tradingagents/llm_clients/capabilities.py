@@ -89,6 +89,19 @@ _DEFAULT = ModelCapabilities(
     preferred_structured_method="function_calling",
 )
 
+# Moonshot Kimi K2.x accepts the tools array but only supports tool_choice
+# values "auto"/"none" -- the object-form tool_choice langchain sends for
+# forced function-calling structured output is K3-only (Moonshot's OpenAI
+# migration guide, platform.kimi.ai/docs/guide/migrating-from-openai-to-kimi).
+# Same shape as the DeepSeek/MiniMax quirks above: suppress tool_choice, still
+# bind the schema as a tool.
+_KIMI_K2 = ModelCapabilities(
+    supports_tool_choice=False,
+    supports_json_mode=True,
+    supports_json_schema=False,
+    preferred_structured_method="function_calling",
+)
+
 
 # Exact-ID matches take precedence over pattern matches.
 _BY_ID: dict[str, ModelCapabilities] = {
@@ -113,6 +126,9 @@ _BY_PATTERN: list[tuple[re.Pattern[str], ModelCapabilities]] = [
     (re.compile(r"^deepseek-v\d"), _DEEPSEEK_THINKING),
     (re.compile(r"^deepseek-reasoner"), _DEEPSEEK_THINKING),
     (re.compile(r"^MiniMax-M\d"), _MINIMAX_THINKING),
+    # kimi-k2, kimi-k2.5, kimi-k2.6, kimi-k2.7-code, etc. -- k3 is NOT matched
+    # here (full tool_choice support) and falls through to _DEFAULT.
+    (re.compile(r"^kimi-k2(\.\d+)?(-\w+)?$"), _KIMI_K2),
 ]
 
 

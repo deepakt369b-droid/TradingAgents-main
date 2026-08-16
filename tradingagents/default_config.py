@@ -12,11 +12,31 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_DEEP_THINK_LLM":       "deep_think_llm",
     "TRADINGAGENTS_QUICK_THINK_LLM":      "quick_think_llm",
     "TRADINGAGENTS_LLM_BACKEND_URL":      "backend_url",
+    # Per-role provider override. When unset (None), the role falls back to
+    # llm_provider / backend_url, so existing single-provider configs and
+    # tests are unaffected. Set both to route deep-thinking and quick-thinking
+    # calls to different providers (e.g. Kimi for deep, Ollama for quick).
+    "TRADINGAGENTS_DEEP_PROVIDER":        "deep_think_provider",
+    "TRADINGAGENTS_DEEP_BASE_URL":        "deep_think_base_url",
+    "TRADINGAGENTS_QUICK_PROVIDER":       "quick_think_provider",
+    "TRADINGAGENTS_QUICK_BASE_URL":       "quick_think_base_url",
     "TRADINGAGENTS_OUTPUT_LANGUAGE":      "output_language",
     "TRADINGAGENTS_MAX_DEBATE_ROUNDS":    "max_debate_rounds",
     "TRADINGAGENTS_MAX_RISK_ROUNDS":      "max_risk_discuss_rounds",
     "TRADINGAGENTS_CHECKPOINT_ENABLED":   "checkpoint_enabled",
     "TRADINGAGENTS_BENCHMARK_TICKER":     "benchmark_ticker",
+    "TRADINGAGENTS_MAX_OHLCV_ROWS":       "max_ohlcv_rows",
+    "TRADINGAGENTS_MAX_INDICATOR_DAYS":   "max_indicator_days",
+    "TRADINGAGENTS_TOKEN_BUDGET_PER_RUN": "token_budget_per_run",
+    # Execution platform for the worker/signal bridge (tradingagents/execution/).
+    # Deliberately NOT TRADINGAGENTS_-prefixed: EXECUTION_PLATFORM is the
+    # existing env var name app/config_store.py's credential store already
+    # writes when the web UI's "Trading Execution Platform" dropdown is
+    # saved -- kept as-is for backward compatibility with that UI/store.
+    "EXECUTION_PLATFORM": "execution_platform",
+    "TRADINGAGENTS_WORKER_CALENDAR": "worker_calendar",
+    "TRADINGAGENTS_AI_TRADER_BASE_URL": "ai_trader_base_url",
+    "TRADINGAGENTS_AI_TRADER_AGENT_TOKEN": "ai_trader_agent_token",
     "TRADINGAGENTS_TEMPERATURE":          "temperature",
     "TRADINGAGENTS_LLM_MAX_RETRIES":      "llm_max_retries",
     # Provider-specific reasoning/thinking knobs (None = each provider's own
@@ -87,6 +107,15 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # provider-specific URL here would leak (e.g. OpenAI's /v1 was previously
     # being forwarded to Gemini, producing malformed request URLs).
     "backend_url": None,
+    # Per-role provider overrides. None means "use llm_provider / backend_url
+    # for this role" -- the pre-existing single-provider behavior. Set one or
+    # both to split deep-thinking and quick-thinking across providers (e.g.
+    # a cloud provider for deep reasoning, a local Ollama endpoint for the
+    # high-volume quick-thinking calls).
+    "deep_think_provider": None,
+    "deep_think_base_url": None,
+    "quick_think_provider": None,
+    "quick_think_base_url": None,
     # Provider-specific thinking configuration
     "google_thinking_level": None,      # "high", "minimal", etc.
     "openai_reasoning_effort": None,    # "medium", "high", "low"
@@ -116,6 +145,40 @@ DEFAULT_CONFIG = _apply_env_overrides({
     "news_article_limit": 20,             # max articles per ticker (ticker-news)
     "global_news_article_limit": 10,      # max articles for global/macro news
     "global_news_lookback_days": 7,       # macro news lookback window
+    # Row caps on agent-controlled date-range tool calls (get_stock_data,
+    # get_indicators). The agent picks start/end dates or a look-back window
+    # itself with no upstream bound, so an unusually wide request otherwise
+    # serializes the full range into the prompt uncapped. Capped by ROWS
+    # (most recent N kept), never by truncating the serialized CSV string --
+    # a string-length cut silently drops rows from the middle while leaving
+    # output that still parses, which is a data-corruption risk in a system
+    # that reads this to place trades.
+    "max_ohlcv_rows": 250,                # ~1 trading year of daily OHLCV rows
+    "max_indicator_days": 90,             # cap on get_indicators' look_back_days
+    # None = unlimited. When set, a run that spends more than this many
+    # tokens (input + output, summed across every LLM call) parks cleanly
+    # via the same path as a provider quota error (StatsCallbackHandler /
+    # TokenBudgetExceededError) instead of running unbounded. Requires
+    # checkpoint_enabled to actually park rather than just crash.
+    "token_budget_per_run": None,
+    # Execution platform for the worker/signal bridge: "paper", "alpaca",
+    # "ccxt"/"binance"/"coinbase"/"kucoin"/"bybit", or "ibkr" (unsupported --
+    # requires a TWS/IB Gateway process). "paper" is always the safe default;
+    # every other value still resolves to paper/sandbox mode unless
+    # TRADINGAGENTS_LIVE_TRADING_ENABLED is set (see execution/live_gate.py).
+    "execution_platform": "paper",
+    # Market calendar the worker checks before running a tick (see
+    # app/worker.py::is_trading_day). "XNYS" (NYSE) by default; a
+    # crypto-only watchlist can leave this as-is since exchange_calendars
+    # isn't required -- the worker falls back to a plain weekday check when
+    # it isn't installed, which already covers crypto (every day is "open").
+    "worker_calendar": "XNYS",
+    # Optional: post completed decisions to an AI-Trader instance (hosted
+    # ai4trade.ai, or a self-run instance) for its leaderboard/copy-trade
+    # surface (see integrations/ai_trader_client.py). Both None = disabled,
+    # the default -- this is purely additive to the pipeline.
+    "ai_trader_base_url": None,
+    "ai_trader_agent_token": None,
     # Search queries used by get_global_news for macro headlines. Extend or
     # replace to broaden geographic / sector coverage.
     "global_news_queries": [

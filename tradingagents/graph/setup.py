@@ -10,6 +10,7 @@ from tradingagents.agents import (
     create_bear_researcher,
     create_bull_researcher,
     create_conservative_debator,
+    create_evidence_digest,
     create_fundamentals_analyst,
     create_market_analyst,
     create_msg_delete,
@@ -79,6 +80,11 @@ class GraphSetup:
             "fundamentals": lambda: create_fundamentals_analyst(self.quick_thinking_llm),
         }
 
+        # Compresses the four analyst reports into one digest for the debate
+        # layer -- see agents/evidence_digest.py. One quick-model call
+        # replaces four full reports being resent on every debate/risk turn.
+        evidence_digest_node = create_evidence_digest(self.quick_thinking_llm)
+
         # Create researcher and manager nodes
         bull_researcher_node = create_bull_researcher(self.quick_thinking_llm)
         bear_researcher_node = create_bear_researcher(self.quick_thinking_llm)
@@ -101,6 +107,7 @@ class GraphSetup:
             workflow.add_node(spec.tool_node, self.tool_nodes[spec.key])
 
         # Add other nodes
+        workflow.add_node("Evidence Digest", evidence_digest_node)
         workflow.add_node("Bull Researcher", bull_researcher_node)
         workflow.add_node("Bear Researcher", bear_researcher_node)
         workflow.add_node("Research Manager", research_manager_node)
@@ -128,11 +135,13 @@ class GraphSetup:
             )
             workflow.add_edge(current_tools, current_analyst)
 
-            # Connect to next analyst or to Bull Researcher if this is the last analyst
+            # Connect to next analyst or to the Evidence Digest if this is the last analyst
             if i < len(plan.specs) - 1:
                 workflow.add_edge(current_clear, plan.specs[i + 1].agent_node)
             else:
-                workflow.add_edge(current_clear, "Bull Researcher")
+                workflow.add_edge(current_clear, "Evidence Digest")
+
+        workflow.add_edge("Evidence Digest", "Bull Researcher")
 
         # Both research-debate edges share the complete DEBATE_PATH_MAP (#1088).
         for debate_node in ("Bull Researcher", "Bear Researcher"):

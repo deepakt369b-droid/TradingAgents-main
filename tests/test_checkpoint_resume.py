@@ -214,5 +214,78 @@ class TestCheckpointSignature(unittest.TestCase):
         self.assertEqual(base, g._run_signature("stock"))
 
 
+class TestSmartResumeSkipsCompletedNodes(unittest.TestCase):
+    """Resume must pass ``None`` as input, not a fresh initial state.
+
+    LangGraph only skips already-completed nodes when the resuming
+    ``invoke``/``stream`` call receives ``input=None`` on a thread with an
+    existing checkpoint. A non-None input -- even one identical to the
+    original -- causes LangGraph to re-execute every node from START,
+    silently re-invoking every already-completed LLM call. This mirrors the
+    resume pattern ``TradingAgentsGraph._run_graph`` uses: gate on
+    ``checkpoint_step(...) is not None`` to decide whether to pass the fresh
+    state or ``None``.
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.ticker = "TEST"
+        self.date = "2026-04-20"
+
+    def _resolve_graph_input(self, fresh_state, tid, sig=""):
+        """Mirrors the gating logic in TradingAgentsGraph._run_graph."""
+        resuming = checkpoint_step(self.tmpdir, self.ticker, self.date, sig) is not None
+        return None if resuming else fresh_state
+
+    def test_node_a_does_not_rerun_on_resume(self):
+        global _should_crash
+        builder = _build_graph()
+        tid = thread_id(self.ticker, self.date)
+        cfg = {"configurable": {"thread_id": tid}}
+        calls = {"a": 0, "b": 0}
+
+        def counted_node_a(state):
+            calls["a"] += 1
+            return _node_a(state)
+
+        def counted_node_b(state):
+            calls["b"] += 1
+            return _node_b(state)
+
+        counted_builder = StateGraph(_SimpleState)
+        counted_builder.add_node("analyst", counted_node_a)
+        counted_builder.add_node("trader", counted_node_b)
+        counted_builder.set_entry_point("analyst")
+        counted_builder.add_edge("analyst", "trader")
+        counted_builder.add_edge("trader", END)
+
+        _should_crash = True
+        with get_checkpointer(self.tmpdir, self.ticker) as saver:
+            graph = counted_builder.compile(checkpointer=saver)
+            fresh_input = self._resolve_graph_input({"count": 0}, tid)
+            with self.assertRaises(RuntimeError):
+                graph.invoke(fresh_input, config=cfg)
+
+        self.assertEqual(calls, {"a": 1, "b": 1})
+
+        _should_crash = False
+        with get_checkpointer(self.tmpdir, self.ticker) as saver:
+            graph = counted_builder.compile(checkpointer=saver)
+            resumed_input = self._resolve_graph_input({"count": 0}, tid)
+            self.assertIsNone(resumed_input)  # a checkpoint exists -> resume, not restart
+            result = graph.invoke(resumed_input, config=cfg)
+
+        # analyst must NOT have re-run; only trader (the failed node) reruns.
+        self.assertEqual(calls, {"a": 1, "b": 2})
+        self.assertEqual(result["count"], 11)
+
+    def test_fresh_thread_gets_the_initial_state_not_none(self):
+        # A thread with no prior checkpoint must get the fresh state --
+        # passing None here would raise EmptyInputError.
+        tid = thread_id(self.ticker, self.date)
+        resolved = self._resolve_graph_input({"count": 0}, tid)
+        self.assertEqual(resolved, {"count": 0})
+
+
 if __name__ == "__main__":
     unittest.main()

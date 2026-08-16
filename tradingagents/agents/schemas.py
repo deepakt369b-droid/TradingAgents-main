@@ -339,3 +339,83 @@ def render_sentiment_report(report: SentimentReport) -> str:
         "",
         report.narrative,
     ])
+
+
+# ---------------------------------------------------------------------------
+# Evidence Digest
+# ---------------------------------------------------------------------------
+
+
+class EvidenceDigest(BaseModel):
+    """Structured compression of the four analyst reports for the debate layer.
+
+    The five debate/risk nodes (Bull, Bear, Aggressive, Conservative, Neutral)
+    each used to receive all four *full* analyst reports on every turn, and
+    that cost compounds across nodes and debate rounds. This schema captures
+    only what a debater actually argues from -- named points and figures, not
+    prose -- produced by a single quick-model call so the debate layer reads
+    one digest instead of re-reading everything from scratch every turn. The
+    full reports are unaffected: they're still written to disk and the
+    markdown report tree in full, this only changes what's fed back into the
+    debate/risk prompts.
+    """
+
+    bull_points: list[str] = Field(
+        description=(
+            "3-6 concrete points that support a bullish case, each one "
+            "sentence, drawn from the market/sentiment/news/fundamentals "
+            "reports. Cite specific evidence (numbers, dates, named events), "
+            "not vague summaries."
+        ),
+    )
+    bear_points: list[str] = Field(
+        description=(
+            "3-6 concrete points that support a bearish case, each one "
+            "sentence, drawn from the market/sentiment/news/fundamentals "
+            "reports. Cite specific evidence (numbers, dates, named events), "
+            "not vague summaries."
+        ),
+    )
+    key_figures: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Specific named metrics worth citing verbatim in a debate, e.g. "
+            "'P/E 24.3 vs sector 19.1', 'Revenue +12% YoY', 'RSI 71 "
+            "(overbought)'. Only include figures actually present in the "
+            "source reports -- never invent a number."
+        ),
+    )
+    catalysts: list[str] = Field(
+        default_factory=list,
+        description="Upcoming events or triggers that could move the price (earnings date, product launch, macro release, etc.), if any were reported.",
+    )
+    risks: list[str] = Field(
+        default_factory=list,
+        description="Named risks distinct from the bear case's general thesis (e.g. regulatory, litigation, liquidity, concentration), if any were reported.",
+    )
+    data_gaps: list[str] = Field(
+        default_factory=list,
+        description=(
+            "What's missing, stale, or unreliable in the source reports "
+            "(e.g. 'fundamentals unavailable for this crypto asset', 'no "
+            "insider transaction data'), so debaters don't overstate "
+            "confidence in a thin evidence base."
+        ),
+    )
+
+
+def render_evidence_digest(digest: EvidenceDigest) -> str:
+    """Render an EvidenceDigest to the compact markdown the debate/risk prompts consume."""
+    def _section(title: str, items: list[str]) -> list[str]:
+        if not items:
+            return []
+        return [f"**{title}:**"] + [f"- {item}" for item in items] + [""]
+
+    parts: list[str] = []
+    parts += _section("Bull points", digest.bull_points)
+    parts += _section("Bear points", digest.bear_points)
+    parts += _section("Key figures", digest.key_figures)
+    parts += _section("Catalysts", digest.catalysts)
+    parts += _section("Risks", digest.risks)
+    parts += _section("Data gaps", digest.data_gaps)
+    return "\n".join(parts).rstrip()

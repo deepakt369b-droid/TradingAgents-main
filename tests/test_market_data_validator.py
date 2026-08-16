@@ -64,6 +64,29 @@ class TestVerifiedSnapshot:
 
 
 @pytest.mark.unit
+class TestGetReferencePrice:
+    def test_returns_latest_close_on_or_before_date(self, monkeypatch):
+        monkeypatch.setattr(validator, "load_ohlcv", lambda s, d: _sample_ohlcv())
+        price = validator.get_reference_price("COF", "2026-05-13")
+        expected_close = _sample_ohlcv().set_index("Date").loc["2026-05-13", "Close"]
+        assert price == pytest.approx(float(expected_close))
+
+    def test_uses_previous_trading_day_when_weekend(self, monkeypatch):
+        monkeypatch.setattr(validator, "load_ohlcv", lambda s, d: _sample_ohlcv())
+        price_weekend = validator.get_reference_price("COF", "2026-05-16")  # Saturday
+        price_friday = validator.get_reference_price("COF", "2026-05-15")
+        assert price_weekend == price_friday
+
+    def test_returns_none_when_no_data(self, monkeypatch):
+        monkeypatch.setattr(validator, "load_ohlcv", lambda s, d: pd.DataFrame())
+        assert validator.get_reference_price("COF", "2026-05-13") is None
+
+    def test_returns_none_when_no_rows_on_or_before_date(self, monkeypatch):
+        monkeypatch.setattr(validator, "load_ohlcv", lambda s, d: _sample_ohlcv())
+        assert validator.get_reference_price("COF", "2020-01-01") is None
+
+
+@pytest.mark.unit
 class TestTool:
     def test_tool_delegates_to_builder(self, monkeypatch):
         from tradingagents.agents.utils.market_data_validation_tools import (

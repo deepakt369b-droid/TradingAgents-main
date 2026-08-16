@@ -68,8 +68,12 @@ def test_adaptive_model_router():
     assert tier_volatile == "deep"
 
 
-def test_paper_executor_and_risk_guards():
-    executor = PaperExecutor(initial_cash=10000.0)
+def test_paper_executor_and_risk_guards(tmp_path):
+    # data_dir must be test-isolated: PaperExecutor now persists state to
+    # SQLite (Phase 4 -- state used to be in-memory and was lost on every
+    # restart), so the default path would collide with a real user's
+    # ~/.tradingagents and with other test runs.
+    executor = PaperExecutor(initial_cash=10000.0, data_dir=tmp_path)
     acc = executor.get_account_balance()
     assert acc.cash == 10000.0
 

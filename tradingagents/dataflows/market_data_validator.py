@@ -45,6 +45,25 @@ def _verified_rows(symbol: str, curr_date: str) -> pd.DataFrame:
     return df
 
 
+def get_reference_price(symbol: str, curr_date: str) -> float | None:
+    """Latest verified Close on or before ``curr_date``, or None if unavailable.
+
+    Shares the same look-ahead-safe row fetch as the market analyst's
+    verification snapshot, so a caller that needs "the price to size an
+    order at" (see execution/signal_bridge.py) gets the identical price the
+    analysis itself was anchored to, rather than a separate live quote that
+    could disagree with what the agents actually reasoned about.
+    """
+    try:
+        df = _verified_rows(symbol, curr_date)
+    except ValueError:
+        return None
+    close = df.iloc[-1].get("Close")
+    if close is None or pd.isna(close):
+        return None
+    return float(close)
+
+
 def _fmt(value) -> str:
     if value is None or pd.isna(value):
         return "N/A"

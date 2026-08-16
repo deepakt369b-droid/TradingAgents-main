@@ -134,6 +134,10 @@ def create_app() -> FastAPI:
                     "provider": DEFAULT_CONFIG.get("llm_provider", "openai"),
                     "deep_model": DEFAULT_CONFIG.get("deep_think_llm", "gpt-5.5"),
                     "quick_model": DEFAULT_CONFIG.get("quick_think_llm", "gpt-5.4-mini"),
+                    # None unless overridden -- the UI shows these as "same as
+                    # provider above" until the user opts into a split.
+                    "deep_provider": DEFAULT_CONFIG.get("deep_think_provider"),
+                    "quick_provider": DEFAULT_CONFIG.get("quick_think_provider"),
                     "language": DEFAULT_CONFIG.get("output_language", "English"),
                 },
             }
@@ -259,6 +263,52 @@ def create_app() -> FastAPI:
             }
         except Exception as exc:
             logger.error("Error saving production config: %s", exc)
+            return JSONResponse({"success": False, "message": str(exc)}, status_code=500)
+
+    # ---------- Parked Runs ----------
+    @app.get("/api/runs")
+    async def list_runs(status: str = "parked"):
+        """List runs parked after a quota/rate-limit failure (or resolved ones).
+
+        A parked run's LangGraph checkpoint is intact -- resubmit the same
+        ticker+date via /ws/analysis (optionally with a different per-role
+        provider) to resume it from the last completed node rather than
+        starting over.
+        """
+        try:
+            from tradingagents.default_config import DEFAULT_CONFIG
+            from tradingagents.graph import run_registry
+            runs = run_registry.list_parked_runs(DEFAULT_CONFIG["data_cache_dir"], status=status)
+            return {"runs": runs}
+        except Exception as exc:
+            logger.warning("List runs error: %s", exc)
+            return JSONResponse({"error": str(exc)}, status_code=500)
+
+    @app.post("/api/runs/clear")
+    async def clear_run(body: dict):
+        """Abandon a parked run: clear its checkpoint and mark it resolved.
+
+        Use this instead of resuming when the parked run should just start
+        over from scratch next time (equivalent to the CLI's
+        --clear-checkpoints, scoped to one ticker+date).
+        """
+        ticker = body.get("ticker", "")
+        trade_date = body.get("trade_date", "")
+        signature = body.get("signature", "")
+        if not ticker or not trade_date:
+            return JSONResponse(
+                {"success": False, "message": "ticker and trade_date are required"}, status_code=400
+            )
+        try:
+            from tradingagents.default_config import DEFAULT_CONFIG
+            from tradingagents.graph import run_registry
+            from tradingagents.graph.checkpointer import clear_checkpoint
+            data_dir = DEFAULT_CONFIG["data_cache_dir"]
+            clear_checkpoint(data_dir, ticker, trade_date, signature)
+            run_registry.mark_run_resolved(data_dir, ticker, trade_date, signature, status="cleared")
+            return {"success": True}
+        except Exception as exc:
+            logger.warning("Clear run error: %s", exc)
             return JSONResponse({"success": False, "message": str(exc)}, status_code=500)
 
     # ---------- Update Check ----------
@@ -389,6 +439,7 @@ def _run_analysis_sync(
     """
     from tradingagents.default_config import DEFAULT_CONFIG
     from tradingagents.graph.trading_graph import TradingAgentsGraph
+    from tradingagents.graph.checkpointer import thread_id
     from tradingagents.graph.analyst_execution import (
         AnalystWallTimeTracker,
         build_analyst_execution_plan,
@@ -399,52 +450,80 @@ def _run_analysis_sync(
 
     send = lambda data: _send_ws_sync(ws, loop, data)
 
+    # Bound here (not inside the try) so the except handler below can safely
+    # check "is checkpointed_ctx None" regardless of how early the try block
+    # failed -- it's only non-None once graph/ticker/analysis_date/asset_type
+    # are all already bound too.
+    checkpointed_ctx = None
+
     try:
-        # Build config
+        # Build config. "provider"/"base_url" remain the shared/legacy fields
+        # (single-provider requests from older UI builds keep working
+        # unchanged); "deep_provider"/"quick_provider" let the UI route each
+        # role to a different provider, falling back to the shared value when
+        # a role-specific one isn't sent.
         config = DEFAULT_CONFIG.copy()
-        config["llm_provider"] = request.get("provider", "openai").lower()
+        shared_provider = request.get("provider", "openai").lower()
+        deep_provider = (request.get("deep_provider") or shared_provider).lower()
+        quick_provider = (request.get("quick_provider") or shared_provider).lower()
+        config["llm_provider"] = deep_provider
+        config["deep_think_provider"] = deep_provider
+        config["quick_think_provider"] = quick_provider
         config["deep_think_llm"] = request.get("deep_model", "gpt-5.5")
         config["quick_think_llm"] = request.get("quick_model", "gpt-5.4-mini")
         config["max_debate_rounds"] = request.get("depth", 1)
         config["max_risk_discuss_rounds"] = request.get("depth", 1)
         config["output_language"] = request.get("language", "English")
 
-        base_url = request.get("base_url")
-        if base_url:
-            config["backend_url"] = base_url
+        shared_base_url = request.get("base_url")
+        deep_base_url = request.get("deep_base_url") or shared_base_url
+        quick_base_url = request.get("quick_base_url") or shared_base_url
+        if deep_base_url:
+            config["backend_url"] = deep_base_url
+            config["deep_think_base_url"] = deep_base_url
+        if quick_base_url:
+            config["quick_think_base_url"] = quick_base_url
 
         # Diagnostic log so Coolify logs show exactly what the UI sent.
         from tradingagents.llm_clients.api_key_env import get_api_key_env
-        api_key_env = get_api_key_env(config["llm_provider"])
         logger.info(
-            "Analysis request: provider=%s deep=%s quick=%s base_url=%s key_env=%s",
-            config["llm_provider"],
-            config["deep_think_llm"],
-            config["quick_think_llm"],
-            config.get("backend_url") or "(provider default)",
-            api_key_env or "(none)",
+            "Analysis request: deep=%s/%s (base_url=%s) quick=%s/%s (base_url=%s)",
+            deep_provider, config["deep_think_llm"], deep_base_url or "(provider default)",
+            quick_provider, config["quick_think_llm"], quick_base_url or "(provider default)",
         )
 
         # Enable checkpointing for resume support
         config["checkpoint_enabled"] = True
 
-        # Set API key if provided
+        # Set API key(s) if provided. api_key applies to the deep-thinking
+        # provider (legacy field name); quick_api_key is optional and only
+        # needed when quick_provider differs from deep_provider and its key
+        # isn't already in the persistent credential store.
         if request.get("api_key"):
-            from tradingagents.llm_clients.api_key_env import get_api_key_env
-            env_var = get_api_key_env(config["llm_provider"])
+            env_var = get_api_key_env(deep_provider)
             if env_var:
                 os.environ[env_var] = request["api_key"]
+        if request.get("quick_api_key"):
+            env_var = get_api_key_env(quick_provider)
+            if env_var:
+                os.environ[env_var] = request["quick_api_key"]
 
-        # Provider-specific thinking config
+        # Provider-specific thinking config, applied per role so a deep/quick
+        # split across providers doesn't leak one role's knob onto the other.
+        def _apply_thinking_config(provider: str, value: str) -> None:
+            if provider == "google":
+                config["google_thinking_level"] = value
+            elif provider == "openai":
+                config["openai_reasoning_effort"] = value
+            elif provider == "anthropic":
+                config["anthropic_effort"] = value
+
         thinking = request.get("thinking_config")
         if thinking:
-            provider = config["llm_provider"]
-            if provider == "google":
-                config["google_thinking_level"] = thinking
-            elif provider == "openai":
-                config["openai_reasoning_effort"] = thinking
-            elif provider == "anthropic":
-                config["anthropic_effort"] = thinking
+            _apply_thinking_config(deep_provider, thinking)
+        quick_thinking = request.get("quick_thinking_config")
+        if quick_thinking and quick_provider != deep_provider:
+            _apply_thinking_config(quick_provider, quick_thinking)
 
         # Analyst setup
         selected_analysts = request.get("analysts", ["market", "social", "news", "fundamentals"])
@@ -457,7 +536,7 @@ def _run_analysis_sync(
         send({"type": "message", "msg_type": "System", "content": f"Starting analysis for {ticker} on {analysis_date}"})
 
         # Create stats handler
-        stats_handler = StatsCallbackHandler()
+        stats_handler = StatsCallbackHandler(token_budget=config.get("token_budget_per_run"))
         start_time = time.time()
 
         # Build analyst execution plan
@@ -488,6 +567,20 @@ def _run_analysis_sync(
         )
         args = graph.propagator.get_graph_args(callbacks=[stats_handler])
 
+        # Recompile with a checkpointer for the duration of this run (see
+        # TradingAgentsGraph.checkpointed -- config["checkpoint_enabled"]=True
+        # above is otherwise inert, since this handler streams graph.graph
+        # directly rather than going through propagate()). thread_id is keyed
+        # on ticker+date+graph-shape, NOT on which provider/model is
+        # configured, so resuming under a different deep/quick provider than
+        # the run that originally failed reuses the same checkpoint.
+        checkpointed_ctx = graph.checkpointed(ticker)
+        checkpointed_ctx.__enter__()
+        if config.get("checkpoint_enabled"):
+            tid = thread_id(ticker, str(analysis_date), graph._run_signature(asset_type.value))
+            args.setdefault("config", {}).setdefault("configurable", {})["thread_id"] = tid
+        graph_input = graph.resolve_graph_input(init_state, ticker, analysis_date, asset_type.value)
+
         # Set first analyst to in_progress
         first_analyst = get_initial_analyst_node(analyst_execution_plan)
         send({"type": "agent_status", "agent": first_analyst, "status": "in_progress"})
@@ -514,7 +607,7 @@ def _run_analysis_sync(
 
         # Stream the analysis
         trace = []
-        for chunk in graph.graph.stream(init_state, **args):
+        for chunk in graph.graph.stream(graph_input, **args):
             # Process messages
             for message in chunk.get("messages", []):
                 msg_id = getattr(message, "id", None)
@@ -701,10 +794,37 @@ def _run_analysis_sync(
         if cli_insights:
             final_state["cli_insights"] = cli_insights
 
+        # Close the checkpointer and clear/resolve the checkpoint + any
+        # parked-run record now that the run completed successfully.
+        if checkpointed_ctx is not None:
+            checkpointed_ctx.__exit__(None, None, None)
+            graph.conclude_checkpointed_run(ticker, analysis_date, asset_type.value)
+
         send({"type": "complete", "final_state": _serialize_final_state(final_state)})
 
     except Exception as exc:
         logger.error("Analysis error: %s", exc, exc_info=True)
+        if checkpointed_ctx is not None:
+            try:
+                checkpointed_ctx.__exit__(type(exc), exc, exc.__traceback__)
+            except Exception:
+                logger.warning("Failed to close checkpointer context cleanly", exc_info=True)
+            try:
+                # Reclassifies exc; raises RunParkedError (chained from exc)
+                # for a quota failure so the WS "error" detail is the clear
+                # parked/resumable message instead of the bare provider error,
+                # and so a parked-run record + intact checkpoint exist for
+                # this run even though it was driven outside propagate().
+                graph.park_or_raise(exc, ticker, analysis_date, asset_type.value)
+            except Exception as parked_exc:
+                exc = parked_exc
+                send({
+                    "type": "parked",
+                    "ticker": getattr(parked_exc, "ticker", ticker),
+                    "trade_date": getattr(parked_exc, "trade_date", analysis_date),
+                    "failed_role": getattr(parked_exc, "failed_role", "unknown"),
+                    "failed_provider": getattr(parked_exc, "failed_provider", "unknown"),
+                })
         send({"type": "error", "detail": str(exc)})
 
 

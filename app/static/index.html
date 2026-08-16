@@ -97,6 +97,58 @@
             <select id="quick-model"></select>
           </div>
         </div>
+
+        <!-- Split quick-thinking onto a different provider (e.g. a local
+             Ollama endpoint for the high-volume quick calls, while deep
+             reasoning stays on a cloud provider above). -->
+        <div class="form-row" style="align-items: center;">
+          <label style="display: flex; align-items: center; gap: 8px; font-size: 0.85rem; cursor: pointer;">
+            <input type="checkbox" id="split-quick-provider">
+            Use a different provider for Quick Thinking
+          </label>
+        </div>
+        <div id="quick-provider-section" class="hidden">
+          <div class="form-row">
+            <div class="form-group">
+              <label for="quick-llm-provider">Quick-Thinking Provider</label>
+              <select id="quick-llm-provider">
+                <option value="openai">OpenAI</option>
+                <option value="google">Google (Gemini)</option>
+                <option value="anthropic">Anthropic (Claude)</option>
+                <option value="xai">xAI (Grok)</option>
+                <option value="deepseek">DeepSeek</option>
+                <option value="kimi">Moonshot (Kimi)</option>
+                <option value="groq">Groq</option>
+                <option value="nvidia">NVIDIA</option>
+                <option value="ollama">Ollama (Local)</option>
+                <option value="openrouter">OpenRouter</option>
+                <option value="lm_studio">LM Studio</option>
+                <option value="openai_compatible">OpenAI Compatible</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="quick-api-key">Quick-Thinking API Key</label>
+              <div class="key-input-wrap">
+                <input type="password" id="quick-api-key" placeholder="Leave blank to reuse a saved key">
+              </div>
+            </div>
+          </div>
+          <div class="form-row" id="quick-base-url-wrap">
+            <div class="form-group" style="flex: 1;">
+              <label for="quick-base-url">Quick-Thinking Base URL (Endpoint)</label>
+              <input type="text" id="quick-base-url" placeholder="e.g. http://host.docker.internal:11434/v1">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group hidden" id="quick-thinking-config-wrap">
+              <label for="quick-thinking-config" id="quick-thinking-config-label">Reasoning Effort</label>
+              <select id="quick-thinking-config">
+                <option value="">Default</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
         <div class="form-row">
           <div class="form-group">
             <label for="output-language">Output Language</label>
@@ -281,22 +333,6 @@
             <div class="depth-label">Deep</div>
             <div class="depth-desc">Thorough, 5 rounds</div>
           </div>
-        </div>
-      </div>
-
-      <!-- CLI Integrations -->
-      <div class="glass config-section">
-        <div class="section-title" style="display: flex; justify-content: space-between; align-items: center;">
-          <span><span class="step-num">6</span> CLI Integrations (Agent Skills)</span>
-          <button class="btn-secondary" id="btn-detect-clis" style="padding: 4px 12px; font-size: 0.8rem;">Auto-Detect</button>
-        </div>
-        <p class="text-muted" style="margin: 8px 0 12px 0; font-size: 0.8rem;">
-          API keys are optional — enable a tool and either paste an API key or click
-          <b>🔑 Login</b> to authorize with your provider account (OAuth). Logins are stored
-          on the server in the agent's config folder.
-        </p>
-        <div class="cli-grid" id="cli-grid">
-          <!-- Will be populated by JS -->
         </div>
       </div>
 

@@ -1,36 +1,88 @@
 version: '3.8'
 
+x-tradingagents-env: &tradingagents_env
+  # Explicit, not host-inherited: the worker's market-hours/cron logic must
+  # not depend on the container host's local timezone. TRADINGAGENTS_WORKER_CRON
+  # is already specified in UTC (see below), so UTC is the correct default here.
+  TZ: ${TZ:-UTC}
+  TRADINGAGENTS_LLM_PROVIDER: ${TRADINGAGENTS_LLM_PROVIDER:-openai}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+  MOONSHOT_API_KEY: ${MOONSHOT_API_KEY:-}
+  DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+  # Per-role provider split: leave unset to route both deep- and
+  # quick-thinking through TRADINGAGENTS_LLM_PROVIDER above (unchanged
+  # single-provider behavior). Set both to split roles across providers,
+  # e.g. TRADINGAGENTS_DEEP_PROVIDER=kimi with
+  # TRADINGAGENTS_QUICK_PROVIDER=ollama pointed at host.docker.internal
+  # below. See extra_hosts (per-service) for why that hostname resolves.
+  TRADINGAGENTS_DEEP_PROVIDER: ${TRADINGAGENTS_DEEP_PROVIDER:-}
+  TRADINGAGENTS_DEEP_BASE_URL: ${TRADINGAGENTS_DEEP_BASE_URL:-}
+  TRADINGAGENTS_QUICK_PROVIDER: ${TRADINGAGENTS_QUICK_PROVIDER:-}
+  TRADINGAGENTS_QUICK_BASE_URL: ${TRADINGAGENTS_QUICK_BASE_URL:-}
+  # Ollama running on the same physical/virtual machine as this container's
+  # Docker daemon (not a separate ollama compose service): host.docker.internal
+  # resolves to that host via extra_hosts. Ollama itself must bind 0.0.0.0
+  # (OLLAMA_HOST=0.0.0.0), not just loopback, or the container cannot reach it.
+  OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}
+  CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
+  CLOUDFLARE_GATEWAY_ID: ${CLOUDFLARE_GATEWAY_ID:-}
+  CLOUDFLARE_BYOK_ALIAS: ${CLOUDFLARE_BYOK_ALIAS:-}
+  ALPACA_API_KEY: ${ALPACA_API_KEY:-}
+  ALPACA_SECRET_KEY: ${ALPACA_SECRET_KEY:-}
+  CCXT_EXCHANGE: ${CCXT_EXCHANGE:-binance}
+  CCXT_API_KEY: ${CCXT_API_KEY:-}
+  CCXT_SECRET_KEY: ${CCXT_SECRET_KEY:-}
+  EXECUTION_PLATFORM: ${EXECUTION_PLATFORM:-paper}
+  # Paper-first gate (tradingagents/execution/live_gate.py): every executor
+  # resolves to paper/sandbox mode regardless of platform config UNLESS this
+  # is explicitly "true". Leave unset/false until you've reviewed a real
+  # paper-trading track record. A kill-switch file (LIVE_TRADING_KILL_SWITCH
+  # in the data volume) halts order submission even when this is true,
+  # without touching this variable.
+  TRADINGAGENTS_LIVE_TRADING_ENABLED: ${TRADINGAGENTS_LIVE_TRADING_ENABLED:-false}
+  # Comma-separated tickers the worker analyzes on each scheduled tick, e.g.
+  # "AAPL,MSFT,BTC-USD". Empty = worker idles (does nothing) every tick.
+  TRADINGAGENTS_WATCHLIST: ${TRADINGAGENTS_WATCHLIST:-}
+  # Standard 5-field cron expression, UTC. Default: weekdays at 21:00 UTC
+  # (~4-5pm ET depending on DST), after the US market close.
+  TRADINGAGENTS_WORKER_CRON: ${TRADINGAGENTS_WORKER_CRON:-0 21 * * 1-5}
+  # Master key that encrypts the browser-saved credentials store at rest.
+  TRADINGAGENTS_CREDENTIALS_KEY: ${TRADINGAGENTS_CREDENTIALS_KEY:-}
+
 services:
   tradingagents:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # Broker/exchange execution deps (Alpaca, CCXT). 0 = image stays lean;
+        # PaperExecutor needs neither package. Set to 1 only once you're
+        # actually wiring up Alpaca/CCXT credentials below.
+        INSTALL_EXEC_DEPS: ${INSTALL_EXEC_DEPS:-0}
     restart: always
     # Coolify itself runs on host port 8000, so the app is exposed on 8001.
     # The container still listens on internal port 8000 (see Dockerfile CMD).
     ports:
       - "8001:8000"
     environment:
-      - PORT=8000
-      - TRADINGAGENTS_LLM_PROVIDER=${TRADINGAGENTS_LLM_PROVIDER:-openai}
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
-      - CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:-}
-      - CLOUDFLARE_GATEWAY_ID=${CLOUDFLARE_GATEWAY_ID:-}
-      - CLOUDFLARE_BYOK_ALIAS=${CLOUDFLARE_BYOK_ALIAS:-}
-      - ALPACA_API_KEY=${ALPACA_API_KEY:-}
-      - ALPACA_SECRET_KEY=${ALPACA_SECRET_KEY:-}
-      - CCXT_EXCHANGE=${CCXT_EXCHANGE:-binance}
-      - CCXT_API_KEY=${CCXT_API_KEY:-}
-      - CCXT_SECRET_KEY=${CCXT_SECRET_KEY:-}
-      # Master key that encrypts the browser-saved credentials store at rest.
-      - TRADINGAGENTS_CREDENTIALS_KEY=${TRADINGAGENTS_CREDENTIALS_KEY:-}
+      <<: *tradingagents_env
+      PORT: 8000
+    extra_hosts:
+      # Lets OLLAMA_BASE_URL=http://host.docker.internal:... reach Ollama
+      # running directly on the Docker host (works on Linux Docker Engine
+      # 20.10+ as well as Docker Desktop).
+      - "host.docker.internal:host-gateway"
     volumes:
+      # Shared with the worker service below: checkpoints, the
+      # paper-portfolio ledger, and the order ledger must be the SAME
+      # volume both services see, or the worker's idempotency/resume
+      # guarantees silently stop working.
       - tradingagents_data:/home/appuser/.tradingagents
       - tradingagents_config:/home/appuser/app/config
       # CLI agent OAuth credentials (Claude Code / Codex / Gemini / OpenCode)
-      # survive container recreates.
+      # survive container recreates. Web-only: the worker never uses these.
       - tradingagents_claude:/home/appuser/.claude
       - tradingagents_codex:/home/appuser/.codex
       - tradingagents_gemini:/home/appuser/.gemini
@@ -42,6 +94,37 @@ services:
       timeout: 10s
       retries: 3
       start_period: 15s
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Worker needs apscheduler/exchange_calendars (pip installed at
+        # startup below, not baked into this build arg -- see command).
+        INSTALL_EXEC_DEPS: ${INSTALL_EXEC_DEPS:-0}
+    restart: unless-stopped
+    # No published port and no domain in Coolify -- this is a background
+    # process only, not a web service.
+    command: >
+      sh -c "pip install --no-cache-dir 'apscheduler>=3.10,<4' 'exchange_calendars>=4.5' && python -m app.worker"
+    environment:
+      <<: *tradingagents_env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - tradingagents_data:/home/appuser/.tradingagents
+      - tradingagents_config:/home/appuser/app/config
+    healthcheck:
+      # No HTTP endpoint to poll -- checks that the worker touched its
+      # heartbeat file within the last 2 scheduled ticks' worth of time.
+      # A stalled/crashed scheduler loop (still alive as a process but not
+      # actually ticking) shows as unhealthy instead of silently doing nothing.
+      test: ["CMD-SHELL", "python -c \"import pathlib,time,sys; p=pathlib.Path('/home/appuser/.tradingagents/worker_heartbeat'); sys.exit(0 if p.exists() and time.time()-p.stat().st_mtime < 172800 else 1)\" || exit 1"]
+      interval: 300s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
 
 volumes:
   tradingagents_data:

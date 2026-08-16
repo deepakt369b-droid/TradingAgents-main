@@ -204,6 +204,7 @@ class ProviderSpec:
     placeholder_key: str = "EMPTY"            # sent when no key is available (keyless local servers)
     require_base_url: bool = False            # error if no base_url is resolved (generic endpoint)
     use_responses_api: bool = False           # native OpenAI Responses API
+    max_temperature: float | None = None      # clamp an out-of-range temperature instead of a 400
 
 
 # Single source of truth for the OpenAI-compatible provider family. Dual-region
@@ -221,7 +222,10 @@ OPENAI_COMPATIBLE_PROVIDERS: dict[str, ProviderSpec] = {
     "minimax-cn": ProviderSpec(base_url="https://api.minimaxi.com/v1", chat_class=MinimaxChatOpenAI),
     "openrouter": ProviderSpec(base_url="https://openrouter.ai/api/v1"),
     "mistral":    ProviderSpec(base_url="https://api.mistral.ai/v1"),
-    "kimi":       ProviderSpec(base_url="https://api.moonshot.ai/v1"),
+    # Kimi K2.x accepts temperature in [0, 1], not the [0, 2] OpenAI range
+    # (platform.kimi.ai/docs/guide/migrating-from-openai-to-kimi); clamp
+    # rather than let an out-of-range value 400 the request.
+    "kimi":       ProviderSpec(base_url="https://api.moonshot.ai/v1", max_temperature=1.0),
     "groq":       ProviderSpec(base_url="https://api.groq.com/openai/v1"),
     "nvidia":     ProviderSpec(base_url="https://integrate.api.nvidia.com/v1"),
     "together":   ProviderSpec(base_url="https://api.together.xyz/v1"),
@@ -343,7 +347,16 @@ class OpenAIClient(BaseLLMClient):
                 continue
             if key == "reasoning_effort" and not _supports_reasoning_effort(self.model):
                 continue
-            llm_kwargs[key] = self.kwargs[key]
+            value = self.kwargs[key]
+            if (
+                key == "temperature"
+                and spec is not None
+                and spec.max_temperature is not None
+                and isinstance(value, (int, float))
+                and value > spec.max_temperature
+            ):
+                value = spec.max_temperature
+            llm_kwargs[key] = value
 
         # The subclass (provider quirks) comes from the registry spec.
         return chat_cls(**llm_kwargs)
