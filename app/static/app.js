@@ -351,7 +351,10 @@
       google: { deep: ['gemini-3.5-pro', 'gemini-3.0-pro'], quick: ['gemini-3.5-flash', 'gemini-3.0-flash'] },
       anthropic: { deep: ['claude-opus-4', 'claude-sonnet-4'], quick: ['claude-sonnet-4', 'claude-haiku-3.5'] },
       deepseek: { deep: ['deepseek-r1', 'deepseek-chat'], quick: ['deepseek-chat'] },
-      kimi: { deep: ['kimi-latest', 'kimi-k2'], quick: ['kimi-latest', 'kimi-k2-turbo'] },
+      // Moonshot rotates model IDs frequently; these are the current non-sunset
+      // IDs as of Aug 2026. Use OpenAI Compatible + a custom base_url for the
+      // Kimi Code Plan endpoint (https://api.kimi.com/coding/v1).
+      kimi: { deep: ['kimi-k3', 'kimi-k2.7-code'], quick: ['kimi-k3'] },
       nvidia: { deep: ['meta/llama-3.1-70b-instruct', 'nvidia/llama-3.1-nemotron-70b-instruct'], quick: ['meta/llama-3.1-8b-instruct'] },
       ollama: { deep: ['llama3.3:70b'], quick: ['llama3.3:8b'] },
       openrouter: { deep: ['anthropic/claude-3.5-sonnet', 'openai/gpt-4o'], quick: ['meta-llama/llama-3.1-8b-instruct'] },
@@ -395,10 +398,19 @@
     // API base URL (from /api/config) and editable.
     const wrap = $('#base-url-wrap');
     wrap.classList.remove('hidden');
+    if (!state.config || !state.config.base_urls) return;
+
     const input = $('#base-url');
-    if (!input.value.trim() && state.config && state.config.base_urls) {
-      const url = state.config.base_urls[provider];
-      if (url) input.value = url;
+    const newUrl = state.config.base_urls[provider];
+    const current = input.value.trim();
+
+    // If the field is empty or currently holds another provider's default
+    // endpoint, switch it to the newly selected provider's default. This
+    // prevents a stale OpenAI URL from being sent when the user switches to
+    // Moonshot (or any other provider).
+    const knownDefaults = new Set(Object.values(state.config.base_urls));
+    if (!current || knownDefaults.has(current)) {
+      input.value = newUrl || '';
     }
   }
 

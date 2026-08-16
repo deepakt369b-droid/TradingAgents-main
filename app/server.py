@@ -413,6 +413,18 @@ def _run_analysis_sync(
         if base_url:
             config["backend_url"] = base_url
 
+        # Diagnostic log so Coolify logs show exactly what the UI sent.
+        from tradingagents.llm_clients.api_key_env import get_api_key_env
+        api_key_env = get_api_key_env(config["llm_provider"])
+        logger.info(
+            "Analysis request: provider=%s deep=%s quick=%s base_url=%s key_env=%s",
+            config["llm_provider"],
+            config["deep_think_llm"],
+            config["quick_think_llm"],
+            config.get("backend_url") or "(provider default)",
+            api_key_env or "(none)",
+        )
+
         # Enable checkpointing for resume support
         config["checkpoint_enabled"] = True
 
