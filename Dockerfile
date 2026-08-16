@@ -66,15 +66,20 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Gemini CLI, OpenCode. These run headlessly inside the container when enabled
 # in the app's CLI Integrations section, so they are installed here.
 #
-# Disable to skip the ~50 MB Node download + npm installs on slow networks:
-#   docker build --build-arg INSTALL_AGENT_CLIS=0 ...
+# DEFAULT IS 0 for Coolify / headless Docker builds on slow networks.
+# The Node tarball + npm global installs are ~80 MB and npm emits no progress
+# output, which trips Coolify's build timeout on the ~80 kB/s network this host
+# has. Skipping the step fixes the "stuck" deployment shown in the build log.
+#
+# Re-enable the CLIs by passing the build arg:
+#   docker build --build-arg INSTALL_AGENT_CLIS=1 ...
 # Each agent also needs its provider API key at runtime (ANTHROPIC_API_KEY,
 # OPENAI_API_KEY, GEMINI_API_KEY, ...) set via Coolify environment variables.
 # The CLI package versions are pinned for reproducible builds -- an unpinned
 # global install re-resolves "latest" whenever this layer rebuilds, so upstream
 # releases can silently break the login/model commands the app depends on.
 # ─────────────────────────────────────────────────────────────────────────────
-ARG INSTALL_AGENT_CLIS=1
+ARG INSTALL_AGENT_CLIS=0
 RUN if [ "$INSTALL_AGENT_CLIS" = "1" ]; then \
       python -c "import urllib.request, tarfile, os; \
 urllib.request.urlretrieve('https://nodejs.org/dist/v22.17.0/node-v22.17.0-linux-x64.tar.gz', '/tmp/node.tar.gz'); \

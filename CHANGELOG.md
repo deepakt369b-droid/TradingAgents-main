@@ -6,6 +6,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Breaking changes within the 0.x line are called out explicitly.
 
+## [0.3.1] — 2026-08-16
+
+Upstream correctness/stability patch plus Coolify build fix.
+
+### Fixed
+
+- **Coolify deployment no longer stalls.** The optional CLI-agent install step
+  downloaded Node and ran `npm install -g` for four agent CLIs (~80 MB, no
+  progress output), causing the build to hang on the VM's slow network. It now
+  defaults to disabled in the Docker build. Re-enable with
+  `--build-arg INSTALL_AGENT_CLIS=1` if you need Claude Code / Codex / Gemini /
+  OpenCode inside the container.
+- Alpha Vantage look-ahead filter now parses JSON-string fundamentals payloads
+  before filtering, so future-dated reports no longer leak into historical runs.
+- News analyst prompt aligned with its tool signature to stop hallucinated
+  free-text query calls.
+- Debate and risk routers now share a complete path map so graph routing cannot
+  crash mid-run when a target is missing from a single edge map.
+- Checkpoint resume now includes selected analysts, debate/risk depth, and asset
+  mode in the thread id, so resuming under different settings no longer continues
+  the wrong graph.
+- Crypto sentiment mapping fixed for StockTwits (uses `<BASE>.X`) and Reddit
+  (uses base symbol) so crypto tickers no longer 404.
+
+### Added
+
+- Configurable LLM retry budget via `TRADINGAGENTS_LLM_MAX_RETRIES` forwarded to
+  every provider.
+- Bedrock bearer-token auth via `AWS_BEARER_TOKEN_BEDROCK`, taking precedence
+  over ambient AWS credentials.
+- Claude Sonnet 5 (`claude-sonnet-5`) and Fable 5 (`claude-fable-5`) models in
+  the catalog.
+
 ## [0.3.0] — 2026-06-22
 
 Stabilization and extensibility release: a CI gate, a unified verified

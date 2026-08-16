@@ -39,7 +39,7 @@ def create_app() -> FastAPI:
     except Exception as exc:
         logger.warning("Could not apply stored credentials: %s", exc)
 
-    app = FastAPI(title="TradingAgents Desktop", version="0.3.0")
+    app = FastAPI(title="TradingAgents Desktop", version="0.3.1")
 
     # ---------- Static Files ----------
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
@@ -271,8 +271,8 @@ def create_app() -> FastAPI:
             return result
         except Exception as exc:
             return {
-                "current_version": "0.3.0",
-                "latest_version": "0.3.0",
+                "current_version": "0.3.1",
+                "latest_version": "0.3.1",
                 "update_available": False,
                 "download_url": "",
                 "release_notes": "",

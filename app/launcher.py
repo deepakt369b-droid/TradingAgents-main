@@ -18,7 +18,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PORT = 18710
-_APP_TITLE = "TradingAgents v0.3.0"
+_APP_TITLE = "TradingAgents v0.3.1"
 _WINDOW_WIDTH = 1400
 _WINDOW_HEIGHT = 900
 _MIN_WIDTH = 1000
