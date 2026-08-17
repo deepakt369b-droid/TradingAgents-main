@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 logger = logging.getLogger(__name__)
@@ -40,6 +40,45 @@ def create_app() -> FastAPI:
         logger.warning("Could not apply stored credentials: %s", exc)
 
     app = FastAPI(title="TradingAgents Desktop", version="0.3.1")
+
+    # ---------- Access Key Gate ----------
+    # Runs before every other route. See app/auth_gate.py's docstring for
+    # why this exists at all: without it, every route here -- including
+    # ones that overwrite saved broker/LLM credentials, approve trades, and
+    # toggle the kill switch -- is reachable by anyone with the URL.
+    # Disabled entirely (as before this existed) when app_access_key is
+    # unset, so a purely local/desktop install is unaffected.
+    @app.middleware("http")
+    async def _access_key_gate(request: Request, call_next):
+        from app.auth_gate import COOKIE_NAME, QUERY_PARAM, is_authorized, is_exempt
+        from tradingagents.default_config import DEFAULT_CONFIG
+
+        if is_exempt(request.url.path):
+            return await call_next(request)
+
+        app_access_key = DEFAULT_CONFIG.get("app_access_key")
+        cookie_value = request.cookies.get(COOKIE_NAME)
+        query_key = request.query_params.get(QUERY_PARAM)
+        authorized, token_to_set = is_authorized(app_access_key, cookie_value, query_key)
+
+        if not authorized:
+            if "text/html" in request.headers.get("accept", ""):
+                target = "/login?error=1" if query_key else "/login"
+                return RedirectResponse(url=target, status_code=303)
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+
+        response = await call_next(request)
+        if token_to_set:
+            from app.auth_gate import COOKIE_MAX_AGE_SECONDS
+            response.set_cookie(
+                COOKIE_NAME, token_to_set, max_age=COOKIE_MAX_AGE_SECONDS,
+                httponly=True, samesite="lax", secure=request.url.scheme == "https",
+            )
+        return response
+
+    @app.get("/login")
+    async def login_page():
+        return FileResponse(str(_STATIC_DIR / "login.html"))
 
     # ---------- Approval Resolver (background) ----------
     # Runs resolve_pending() on the same short interval as app/worker.py's
@@ -585,6 +624,21 @@ def create_app() -> FastAPI:
     async def ws_analysis(websocket: WebSocket):
         """Stream analysis progress over WebSocket."""
         await websocket.accept()
+
+        # Access key gate. The HTTP middleware above never runs for a
+        # WebSocket upgrade (Starlette dispatches it on a separate path),
+        # so this endpoint -- the one that can trigger paid LLM calls and,
+        # with execute=true, real trades -- needs its own check.
+        from app.auth_gate import COOKIE_NAME, QUERY_PARAM, is_authorized
+        from tradingagents.default_config import DEFAULT_CONFIG
+        app_access_key = DEFAULT_CONFIG.get("app_access_key")
+        authorized, _ = is_authorized(
+            app_access_key, websocket.cookies.get(COOKIE_NAME), websocket.query_params.get(QUERY_PARAM),
+        )
+        if not authorized:
+            await websocket.send_json({"type": "error", "detail": "Unauthorized"})
+            await websocket.close()
+            return
 
         # Check lock
         if not _analysis_lock.acquire(blocking=False):

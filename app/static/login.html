@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TradingAgents — Sign in</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <style>
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 24px;
+    }
+    .login-card {
+      max-width: 360px;
+      width: 100%;
+      padding: 32px 28px;
+      text-align: center;
+    }
+    .login-icon {
+      width: 40px;
+      height: 40px;
+      margin: 0 auto 16px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, var(--accent), var(--purple));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      font-weight: 700;
+      color: #fff;
+    }
+    .login-card h1 {
+      font-size: 1.25rem;
+      margin: 0 0 6px;
+    }
+    .login-card p {
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      margin: 0 0 22px;
+    }
+    .login-card input[type="password"] {
+      width: 100%;
+      margin-bottom: 14px;
+      padding: 10px 14px;
+      background: var(--bg-surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 0.9rem;
+      outline: none;
+    }
+    .login-card input[type="password"]:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-dim);
+    }
+    .login-card button {
+      width: 100%;
+      padding: 11px;
+    }
+    #login-error {
+      color: var(--error);
+      background: var(--error-dim);
+      border-radius: var(--radius-sm);
+      font-size: 0.82rem;
+      padding: 8px 12px;
+      margin-bottom: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div class="glass login-card">
+    <div class="login-icon">TA</div>
+    <h1>Access Key Required</h1>
+    <p>Enter the access key configured for this TradingAgents instance.</p>
+    <div id="login-error" class="hidden">Incorrect key. Try again.</div>
+    <form method="GET" action="/">
+      <input type="password" name="key" placeholder="Access key" autofocus required autocomplete="current-password">
+      <button type="submit" class="btn-launch">Unlock</button>
+    </form>
+  </div>
+
+  <script>
+    if (new URLSearchParams(location.search).get('error') === '1') {
+      document.getElementById('login-error').classList.remove('hidden');
+    }
+  </script>
+</body>
+</html>

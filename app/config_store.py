@@ -101,6 +101,11 @@ PROD_ENV_MAP = {
     "telegram_chat_id": "TELEGRAM_CHAT_ID",
     "telegram_allowed_chat_ids": "TELEGRAM_ALLOWED_CHAT_IDS",
     "telegram_webhook_secret": "TELEGRAM_WEBHOOK_SECRET",
+    # App-wide access key (app/auth_gate.py). Settable here too, but note
+    # the chicken-and-egg: this route is itself gated once a key exists, so
+    # rotating the key via the browser requires already being authenticated
+    # -- the first key must come from .env or a still-unauthenticated app.
+    "app_access_key": "TRADINGAGENTS_APP_ACCESS_KEY",
 }
 
 

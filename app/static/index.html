@@ -349,6 +349,18 @@
           </div>
           <span class="field-hint">Message your bot and send /start to get your chat id. Add it to Allowed Chat IDs before Approve/Reject buttons or commands will work. Set the webhook URL manually via Telegram's setWebhook API to https://&lt;your-domain&gt;/api/telegram/webhook once deployed, using the same secret entered above.</span>
         </div>
+
+        <!-- App-wide Access Key -->
+        <div style="margin-top: 20px;">
+          <h4 style="margin: 0 0 10px 0; color: #f87171; font-size: 0.95rem;">🔒 App Access Key</h4>
+          <div class="form-row">
+            <div class="form-group" style="flex: 2;">
+              <label for="app-access-key">Access Key</label>
+              <input type="password" id="app-access-key" placeholder="leave blank while unset = no login required" autocomplete="off">
+            </div>
+          </div>
+          <span class="field-hint">Nothing else here checks who's asking -- once this app is reachable on a URL other than your own laptop (a Coolify deployment, a Telegram Mini App button, ...), anyone with the link can view balances, approve trades, flip the kill switch, or overwrite these very credentials. Set a long random string here before that happens. Visit the site once with <code>?key=&lt;this value&gt;</code> in the address bar (or use the login page it redirects you to) and it's remembered for ~6 months. A Telegram Mini App button can carry it the same way, e.g. <code>https://your-domain/?key=...</code>. Takes effect after this app process restarts.</span>
+        </div>
       </div>
 
       <!-- Analysts -->

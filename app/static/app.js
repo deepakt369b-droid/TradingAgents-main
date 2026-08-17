@@ -342,6 +342,7 @@
             telegram_chat_id: $('#telegram-chat-id').value.trim(),
             telegram_allowed_chat_ids: $('#telegram-allowed-chat-ids').value.trim(),
             telegram_webhook_secret: $('#telegram-webhook-secret').value.trim(),
+            app_access_key: $('#app-access-key').value.trim(),
           };
 
           const resp = await fetch('/api/save-production-config', {

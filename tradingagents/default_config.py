@@ -49,6 +49,7 @@ _ENV_OVERRIDES = {
     # and Telegram notifications (tradingagents/notifications/). See
     # execution/live_gate.py for the separate (and more fundamental)
     # paper-vs-live gate this sits on top of.
+    "TRADINGAGENTS_APP_ACCESS_KEY": "app_access_key",
     "TRADINGAGENTS_REQUIRE_TRADE_APPROVAL": "require_trade_approval",
     "TRADINGAGENTS_APPROVAL_TIMEOUT_MINUTES": "approval_timeout_minutes",
     "TRADINGAGENTS_EXECUTE_FROM_UI": "execute_from_ui",
@@ -179,6 +180,14 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # every other value still resolves to paper/sandbox mode unless
     # TRADINGAGENTS_LIVE_TRADING_ENABLED is set (see execution/live_gate.py).
     "execution_platform": "paper",
+    # App-wide access key (app/auth_gate.py). None/empty = no gate at all
+    # (the historical default -- every route is open, matching behavior
+    # before this existed). Set it before exposing the app on a public URL
+    # -- nothing else in this app authenticates who is allowed to view
+    # balances, approve trades, toggle the kill switch, or overwrite saved
+    # broker/LLM credentials. A Telegram Mini App button can carry this as
+    # a `?key=...` query param on its configured URL.
+    "app_access_key": None,
     # Human-in-the-loop approval gate (tradingagents/execution/approval_gate.py):
     # when True, every order SignalBridge would otherwise submit is instead
     # written as a pending proposal and (if Telegram is configured) sent for
