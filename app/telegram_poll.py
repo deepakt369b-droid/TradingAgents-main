@@ -78,7 +78,7 @@ def main() -> None:
 
     apply_to_environment()
     config = DEFAULT_CONFIG
-    client = TelegramClient(config.get("telegram_bot_token"))
+    client = TelegramClient(config.get("telegram_bot_token"), timeout=_POLL_TIMEOUT_SECONDS + 10)
     if not client.is_configured:
         logger.error(
             "TELEGRAM_BOT_TOKEN is not set (via .env or the web UI's Telegram "

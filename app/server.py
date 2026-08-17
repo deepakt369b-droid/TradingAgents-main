@@ -767,15 +767,15 @@ def _run_analysis_sync(
         # Set API key(s) if provided. api_key applies to the deep-thinking
         # provider (legacy field name); quick_api_key is optional and only
         # needed when quick_provider differs from deep_provider and its key
-        # isn't already in the persistent credential store.
+        # isn't already in the persistent credential store. Persisted via
+        # config_store (not just os.environ) so a key typed directly into
+        # the run form survives an app restart the same as one saved with
+        # the "Save Key" button.
+        from app.config_store import set_api_key
         if request.get("api_key"):
-            env_var = get_api_key_env(deep_provider)
-            if env_var:
-                os.environ[env_var] = request["api_key"]
+            set_api_key(deep_provider, request["api_key"])
         if request.get("quick_api_key"):
-            env_var = get_api_key_env(quick_provider)
-            if env_var:
-                os.environ[env_var] = request["quick_api_key"]
+            set_api_key(quick_provider, request["quick_api_key"])
 
         # Provider-specific thinking config, applied per role so a deep/quick
         # split across providers doesn't leak one role's knob onto the other.
