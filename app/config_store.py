@@ -270,3 +270,12 @@ def save_production_settings(settings: dict) -> None:
             prod[store_key] = str(val).strip()
             os.environ[env_var] = str(val).strip()
     save_credentials(data)
+
+    # DEFAULT_CONFIG (tradingagents/default_config.py) is a module-level dict
+    # computed once from os.environ at import time -- routes like
+    # /api/telegram/test read it directly, so without this, settings saved
+    # here (e.g. Telegram bot token/chat id) silently would not take effect
+    # until the whole app process restarts, despite the UI's "saved to
+    # runtime" message.
+    from tradingagents.default_config import DEFAULT_CONFIG, _apply_env_overrides
+    _apply_env_overrides(DEFAULT_CONFIG)
