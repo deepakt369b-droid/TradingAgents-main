@@ -17,6 +17,7 @@
       <span class="brand-tag">v0.3.1</span>
     </div>
     <div class="header-actions">
+      <button class="btn-secondary" id="btn-header-trading" style="padding:6px 14px;font-size:0.8rem;">📊 Trading</button>
       <span id="update-badge" class="hidden"></span>
     </div>
   </header>
@@ -44,6 +45,24 @@
           <div class="form-group">
             <label for="analysis-date">Analysis Date</label>
             <input type="date" id="analysis-date">
+          </div>
+        </div>
+        <div class="form-row" style="margin-top: 10px;">
+          <div class="form-group">
+            <label for="run-exec-platform">Trade On</label>
+            <select id="run-exec-platform">
+              <option value="paper">Paper (sandbox, no real orders)</option>
+              <option value="alpaca">Alpaca Markets (US Equities &amp; Options)</option>
+              <option value="ibkr">Interactive Brokers (Global Equities &amp; FX)</option>
+              <option value="ccxt">Crypto Exchange via CCXT</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="run-execute-toggle" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+              <input type="checkbox" id="run-execute-toggle">
+              Execute this decision (send to broker for approval)
+            </label>
+            <span class="field-hint">Off = analysis only. On = the completed decision is proposed as a trade and awaits your Approve/Reject (Telegram or the Trading tab) before anything reaches a broker.</span>
           </div>
         </div>
       </div>
@@ -272,6 +291,64 @@
             </div>
           </div>
         </div>
+
+        <!-- Trade Approval + Telegram -->
+        <div style="margin-top: 20px;">
+          <h4 style="margin: 0 0 10px 0; color: #f0b429; font-size: 0.95rem;">🔔 Trade Approval &amp; Telegram</h4>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="require-trade-approval" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                <input type="checkbox" id="require-trade-approval" checked>
+                Require approval before every order
+              </label>
+            </div>
+            <div class="form-group">
+              <label for="approval-timeout-minutes">Auto-expire unanswered proposals after (minutes)</label>
+              <input type="text" id="approval-timeout-minutes" value="60" placeholder="60">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="execute-from-ui" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                <input type="checkbox" id="execute-from-ui">
+                Allow analysis runs from this web UI to trade at all
+              </label>
+              <span class="field-hint">Off by default. Even when on, each run's own "Execute this decision" toggle must also be checked.</span>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="telegram-enabled" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                <input type="checkbox" id="telegram-enabled">
+                Enable Telegram bot
+              </label>
+            </div>
+            <div class="form-group">
+              <label for="telegram-bot-token">Bot Token (from @BotFather)</label>
+              <input type="password" id="telegram-bot-token" placeholder="123456:ABC-...">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="telegram-chat-id">Default Chat ID (receives proposals)</label>
+              <input type="text" id="telegram-chat-id" placeholder="e.g. 123456789">
+            </div>
+            <div class="form-group">
+              <label for="telegram-allowed-chat-ids">Allowed Chat IDs (comma-separated)</label>
+              <input type="text" id="telegram-allowed-chat-ids" placeholder="123456789">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group" style="flex: 2;">
+              <label for="telegram-webhook-secret">Webhook Secret</label>
+              <input type="password" id="telegram-webhook-secret" placeholder="any random string">
+            </div>
+            <div class="form-group">
+              <button class="btn-secondary" id="btn-telegram-test" style="align-self:flex-end;">Send Test Message</button>
+            </div>
+          </div>
+          <span class="field-hint">Message your bot and send /start to get your chat id. Add it to Allowed Chat IDs before Approve/Reject buttons or commands will work. Set the webhook URL manually via Telegram's setWebhook API to https://&lt;your-domain&gt;/api/telegram/webhook once deployed, using the same secret entered above.</span>
+        </div>
       </div>
 
       <!-- Analysts -->
@@ -416,6 +493,7 @@
       <div class="glass decision-card" id="decision-card">
         <div class="decision-action hold" id="decision-action">HOLD</div>
         <div class="decision-summary" id="decision-summary"></div>
+        <div id="execution-outcome" class="execution-outcome hidden"></div>
       </div>
 
       <!-- Full report sections -->
@@ -426,7 +504,43 @@
       <!-- Actions -->
       <div class="results-actions">
         <button class="btn-secondary" id="btn-save-report">💾 Save Report</button>
+        <button class="btn-secondary" id="btn-view-trading">📊 Trading</button>
         <button class="btn-launch" id="btn-new-analysis" style="padding:10px 28px; font-size:0.88rem;">🔄 New Analysis</button>
+      </div>
+    </div>
+
+    <!-- ===== View 4: Trading ===== -->
+    <div id="view-trading" class="view trading-view">
+      <div class="results-header">
+        <h2>📊 Trading</h2>
+        <p id="trading-status-line">Loading...</p>
+      </div>
+
+      <div class="glass config-section">
+        <div class="section-title" style="display:flex;justify-content:space-between;align-items:center;">
+          <span>Kill Switch</span>
+          <button class="btn-secondary" id="btn-toggle-kill-switch">Loading...</button>
+        </div>
+        <span class="field-hint">When active, no new orders are submitted regardless of approvals -- existing pending proposals still expire on schedule, they just never execute.</span>
+      </div>
+
+      <div class="glass config-section">
+        <div class="section-title">Pending Approvals</div>
+        <div id="pending-approvals-list"><div class="report-placeholder">Loading...</div></div>
+      </div>
+
+      <div class="glass config-section">
+        <div class="section-title">Positions</div>
+        <div id="positions-list"><div class="report-placeholder">Loading...</div></div>
+      </div>
+
+      <div class="glass config-section">
+        <div class="section-title">Recent Proposals</div>
+        <div id="recent-approvals-list"><div class="report-placeholder">Loading...</div></div>
+      </div>
+
+      <div class="results-actions">
+        <button class="btn-secondary" id="btn-trading-back">← Back</button>
       </div>
     </div>
 

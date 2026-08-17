@@ -21,6 +21,12 @@ class AnalysisRequest(BaseModel):
     thinking_config: str | None = None
     cli_options: dict[str, str | bool] = {}
     cli_keys: dict[str, str] = {}
+    # Route the completed decision to SignalBridge (subject to
+    # execute_from_ui and require_trade_approval in config, plus the
+    # paper-first live_gate). False by default -- an analysis run is
+    # analysis-only unless explicitly opted into trading.
+    execute: bool = False
+    execution_platform: str | None = None
 
 
 class WSMessage(BaseModel):
@@ -72,6 +78,10 @@ class CompleteMessage(WSMessage):
     """Sent when analysis finishes successfully."""
     type: str = "complete"
     final_state: dict[str, Any] = {}
+    # The pipeline's actual 5-tier rating (agents/utils/rating.py), parsed
+    # deterministically from final_trade_decision -- NOT re-derived from
+    # report text on the frontend. See app.js's extractDecision().
+    rating: str | None = None
 
 
 class ErrorMessage(WSMessage):

@@ -45,6 +45,18 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_GOOGLE_THINKING_LEVEL":   "google_thinking_level",
     "TRADINGAGENTS_OPENAI_REASONING_EFFORT": "openai_reasoning_effort",
     "TRADINGAGENTS_ANTHROPIC_EFFORT":        "anthropic_effort",
+    # Human-in-the-loop trade approval (tradingagents/execution/approval_*.py)
+    # and Telegram notifications (tradingagents/notifications/). See
+    # execution/live_gate.py for the separate (and more fundamental)
+    # paper-vs-live gate this sits on top of.
+    "TRADINGAGENTS_REQUIRE_TRADE_APPROVAL": "require_trade_approval",
+    "TRADINGAGENTS_APPROVAL_TIMEOUT_MINUTES": "approval_timeout_minutes",
+    "TRADINGAGENTS_EXECUTE_FROM_UI": "execute_from_ui",
+    "TELEGRAM_ENABLED": "telegram_enabled",
+    "TELEGRAM_BOT_TOKEN": "telegram_bot_token",
+    "TELEGRAM_CHAT_ID": "telegram_chat_id",
+    "TELEGRAM_ALLOWED_CHAT_IDS": "telegram_allowed_chat_ids",
+    "TELEGRAM_WEBHOOK_SECRET": "telegram_webhook_secret",
 }
 
 
@@ -167,6 +179,40 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # every other value still resolves to paper/sandbox mode unless
     # TRADINGAGENTS_LIVE_TRADING_ENABLED is set (see execution/live_gate.py).
     "execution_platform": "paper",
+    # Human-in-the-loop approval gate (tradingagents/execution/approval_gate.py):
+    # when True, every order SignalBridge would otherwise submit is instead
+    # written as a pending proposal and (if Telegram is configured) sent for
+    # Approve/Reject, and only the out-of-band resolver ever calls
+    # executor.place_order. True by default -- a personal live trader should
+    # ask before spending real money unless explicitly turned off.
+    "require_trade_approval": True,
+    # Unanswered proposals auto-expire to "no order" after this many minutes
+    # -- silence must never become an implicit approval.
+    "approval_timeout_minutes": 60,
+    # Whether a WebSocket-driven analysis run from the web UI is allowed to
+    # route its completed decision to SignalBridge at all (still subject to
+    # require_trade_approval and the paper-first live_gate above). False by
+    # default; the UI's per-run "Execute this decision" toggle also has to
+    # be on for a given run.
+    "execute_from_ui": False,
+    # Telegram bot for trade-approval notifications and /kill, /status,
+    # /pending commands (tradingagents/notifications/). Disabled unless
+    # explicitly turned on -- an unconfigured bot token already makes
+    # TelegramClient a no-op, but this flag additionally skips constructing
+    # the notifier/scheduling the webhook route at all.
+    "telegram_enabled": False,
+    "telegram_bot_token": None,
+    # Default chat a proposal notification and fill/expiry confirmations are
+    # sent to (your own DM with the bot, from /start).
+    "telegram_chat_id": None,
+    # Comma-separated chat ids allowed to approve/reject or run commands.
+    # Checked on every inbound update regardless of webhook secret -- see
+    # notifications/telegram_handlers.py. Empty means nothing is authorized
+    # yet (only /start replies, to hand you your own chat id to add here).
+    "telegram_allowed_chat_ids": "",
+    # Compared against the X-Telegram-Bot-Api-Secret-Token header on the
+    # webhook route; required for the webhook to accept updates at all.
+    "telegram_webhook_secret": None,
     # Market calendar the worker checks before running a tick (see
     # app/worker.py::is_trading_day). "XNYS" (NYSE) by default; a
     # crypto-only watchlist can leave this as-is since exchange_calendars

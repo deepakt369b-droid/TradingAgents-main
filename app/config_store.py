@@ -91,6 +91,16 @@ PROD_ENV_MAP = {
     "ccxt_exchange": "CCXT_EXCHANGE",
     "ccxt_api_key": "CCXT_API_KEY",
     "ccxt_secret_key": "CCXT_SECRET_KEY",
+    # Trade approval + Telegram (tradingagents/execution/approval_*.py,
+    # tradingagents/notifications/).
+    "require_trade_approval": "TRADINGAGENTS_REQUIRE_TRADE_APPROVAL",
+    "approval_timeout_minutes": "TRADINGAGENTS_APPROVAL_TIMEOUT_MINUTES",
+    "execute_from_ui": "TRADINGAGENTS_EXECUTE_FROM_UI",
+    "telegram_enabled": "TELEGRAM_ENABLED",
+    "telegram_bot_token": "TELEGRAM_BOT_TOKEN",
+    "telegram_chat_id": "TELEGRAM_CHAT_ID",
+    "telegram_allowed_chat_ids": "TELEGRAM_ALLOWED_CHAT_IDS",
+    "telegram_webhook_secret": "TELEGRAM_WEBHOOK_SECRET",
 }
 
 

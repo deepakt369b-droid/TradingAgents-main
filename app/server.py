@@ -14,7 +14,7 @@ import threading
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -40,6 +40,40 @@ def create_app() -> FastAPI:
         logger.warning("Could not apply stored credentials: %s", exc)
 
     app = FastAPI(title="TradingAgents Desktop", version="0.3.1")
+
+    # ---------- Approval Resolver (background) ----------
+    # Runs resolve_pending() on the same short interval as app/worker.py's
+    # own job, so an Approve tap reaches the broker promptly even when this
+    # server is run standalone (desktop app, or a Coolify deployment without
+    # the separate `worker` compose service). apscheduler is an optional
+    # dependency (the `worker` extra) -- its absence degrades gracefully:
+    # approvals still resolve whenever the worker process IS running, they
+    # just won't resolve from the server process alone.
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler
+        from apscheduler.triggers.interval import IntervalTrigger
+
+        def _resolve_pending_job() -> None:
+            from tradingagents.default_config import DEFAULT_CONFIG
+            from tradingagents.execution import resolve_pending
+            try:
+                resolve_pending(DEFAULT_CONFIG)
+            except Exception:
+                logger.exception("Background approval resolver tick failed.")
+
+        _scheduler = BackgroundScheduler(timezone="UTC")
+        _scheduler.add_job(
+            _resolve_pending_job, IntervalTrigger(seconds=30),
+            id="approval_resolver", misfire_grace_time=30,
+        )
+        _scheduler.start()
+        app.state.approval_scheduler = _scheduler
+
+        @app.on_event("shutdown")
+        def _stop_approval_scheduler() -> None:
+            _scheduler.shutdown(wait=False)
+    except ImportError:
+        logger.info("apscheduler not installed; background approval resolver disabled for this process.")
 
     # ---------- Static Files ----------
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
@@ -370,6 +404,182 @@ def create_app() -> FastAPI:
         from app.cli_auth import login_status
         return login_status(tool.strip().lower())
 
+    # ---------- Telegram ----------
+    @app.post("/api/telegram/webhook")
+    async def telegram_webhook(request: Request):
+        """Receive Telegram Bot API updates (button taps, commands).
+
+        Guarded by the ``X-Telegram-Bot-Api-Secret-Token`` header: Telegram
+        echoes back whatever ``secret_token`` was passed to ``setWebhook`` on
+        every request, so a mismatch means the request didn't originate from
+        our own webhook registration. A configured-but-missing/mismatched
+        header is rejected outright; an unconfigured secret accepts anything
+        (documented in .env.example as required for production use).
+        """
+        from tradingagents.default_config import DEFAULT_CONFIG
+        from tradingagents.execution import ApprovalStore
+        from tradingagents.notifications import TelegramClient, handle_update
+
+        config = DEFAULT_CONFIG
+        expected_secret = config.get("telegram_webhook_secret")
+        if expected_secret:
+            got = request.headers.get("x-telegram-bot-api-secret-token")
+            if got != expected_secret:
+                return JSONResponse({"detail": "Forbidden"}, status_code=403)
+
+        update = await request.json()
+        client = TelegramClient(config.get("telegram_bot_token"))
+        store = ApprovalStore(config["data_cache_dir"])
+        await asyncio.to_thread(handle_update, update, client, store, config)
+        return {"ok": True}
+
+    @app.post("/api/telegram/test")
+    async def telegram_test():
+        """Send a test message to the configured chat, from the config screen."""
+        from tradingagents.default_config import DEFAULT_CONFIG
+        from tradingagents.notifications import TelegramClient
+
+        config = DEFAULT_CONFIG
+        client = TelegramClient(config.get("telegram_bot_token"))
+        if not client.is_configured or not config.get("telegram_chat_id"):
+            return JSONResponse(
+                {"success": False, "message": "Telegram bot token or chat id not configured."},
+                status_code=400,
+            )
+        resp = await asyncio.to_thread(
+            client.send_message, config["telegram_chat_id"],
+            "✅ TradingAgents Telegram test message.",
+        )
+        ok = bool(resp and resp.get("ok"))
+        return {"success": ok, "message": "Sent." if ok else "Failed to send -- check token/chat id."}
+
+    # ---------- Trade Approvals ----------
+    @app.get("/api/approvals")
+    async def list_approvals():
+        """Pending proposals plus recent decided/executed ones, for the
+        Trading view's approval queue."""
+        from tradingagents.default_config import DEFAULT_CONFIG
+        from tradingagents.execution import ApprovalStore
+        store = ApprovalStore(DEFAULT_CONFIG["data_cache_dir"])
+        return {"pending": store.list_pending(), "recent": store.list_recent()}
+
+    @app.post("/api/approvals/{approval_id}/decide")
+    async def decide_approval(approval_id: str, body: dict):
+        """Approve/reject from the browser -- same store, same conditional
+        transitions as the Telegram callback handler, so a decision made in
+        either place strips the other's buttons and can't be double-acted."""
+        from tradingagents.default_config import DEFAULT_CONFIG
+        from tradingagents.execution import ApprovalStore
+        from tradingagents.notifications import TelegramClient, format_decision_message
+
+        decision = (body.get("decision") or "").lower()
+        if decision not in ("approve", "reject"):
+            return JSONResponse(
+                {"success": False, "message": "decision must be 'approve' or 'reject'"}, status_code=400,
+            )
+        config = DEFAULT_CONFIG
+        store = ApprovalStore(config["data_cache_dir"])
+        status = "approved" if decision == "approve" else "rejected"
+        row = (
+            store.approve(approval_id, decided_by="ui")
+            if decision == "approve" else store.reject(approval_id, decided_by="ui")
+        )
+        if row is None:
+            return JSONResponse(
+                {"success": False, "message": "Already decided, or unknown approval id."}, status_code=409,
+            )
+        if row.get("chat_id") and row.get("message_id"):
+            client = TelegramClient(config.get("telegram_bot_token"))
+            await asyncio.to_thread(
+                client.edit_message_text,
+                str(row["chat_id"]), str(row["message_id"]),
+                format_decision_message(row["proposal"], status),
+            )
+        return {"success": True, "approval": row}
+
+    # ---------- Trading Status / Kill Switch ----------
+    @app.get("/api/trading/status")
+    async def trading_status():
+        """Platform, live-vs-paper, kill-switch state, balance and positions
+        for the Trading view's status panel."""
+        from tradingagents.default_config import DEFAULT_CONFIG
+        from tradingagents.execution import create_executor, is_kill_switch_active, is_live_trading_enabled
+
+        config = DEFAULT_CONFIG
+        platform = config.get("execution_platform", "paper")
+        result = {
+            "platform": platform,
+            "live_trading_enabled": is_live_trading_enabled(),
+            "kill_switch_active": is_kill_switch_active(config["data_cache_dir"]),
+            "require_trade_approval": config.get("require_trade_approval", True),
+        }
+        try:
+            executor = create_executor(platform, config=config)
+            account = executor.get_account_balance()
+            positions = executor.get_positions()
+            result["account"] = account.model_dump(mode="json")
+            result["positions"] = [p.model_dump(mode="json") for p in positions]
+        except Exception as exc:
+            result["account_error"] = str(exc)
+        return result
+
+    @app.get("/api/kill-switch")
+    async def get_kill_switch():
+        from tradingagents.default_config import DEFAULT_CONFIG
+        from tradingagents.execution import is_kill_switch_active
+        return {"active": is_kill_switch_active(DEFAULT_CONFIG["data_cache_dir"])}
+
+    @app.post("/api/kill-switch")
+    async def set_kill_switch(body: dict):
+        """Toggle the file-based kill switch (see execution/live_gate.py) --
+        checked immediately before every order submission, so this halts new
+        trading without touching config or redeploying."""
+        from tradingagents.default_config import DEFAULT_CONFIG
+        from tradingagents.execution import kill_switch_path
+
+        active = bool(body.get("active", True))
+        path = kill_switch_path(DEFAULT_CONFIG["data_cache_dir"])
+        if active:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("halted via web UI", encoding="utf-8")
+        elif path.exists():
+            path.unlink()
+        return {"active": active}
+
+    # ---------- Persisted Reports ----------
+    @app.get("/api/reports")
+    async def list_reports():
+        """List report trees written by save_reports() -- both UI and
+        worker/CLI runs, since all three call the same helper."""
+        from tradingagents.default_config import DEFAULT_CONFIG
+        reports_dir = Path(DEFAULT_CONFIG["results_dir"]) / "reports"
+        if not reports_dir.exists():
+            return {"reports": []}
+        entries = []
+        for child in sorted(reports_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+            if child.is_dir():
+                entries.append({
+                    "id": child.name,
+                    "modified": child.stat().st_mtime,
+                    "has_complete_report": (child / "complete_report.md").exists(),
+                })
+        return {"reports": entries}
+
+    @app.get("/api/reports/{report_id}")
+    async def get_report(report_id: str):
+        """Return one report's complete_report.md. report_id is a directory
+        name from /api/reports, resolved strictly under results_dir/reports
+        to prevent path traversal."""
+        from tradingagents.default_config import DEFAULT_CONFIG
+        reports_dir = (Path(DEFAULT_CONFIG["results_dir"]) / "reports").resolve()
+        report_dir = (reports_dir / report_id).resolve()
+        if report_dir == reports_dir or not report_dir.is_relative_to(reports_dir):
+            return JSONResponse({"error": "invalid report id"}, status_code=400)
+        report_file = report_dir / "complete_report.md"
+        if not report_file.exists():
+            return JSONResponse({"error": "report not found"}, status_code=404)
+        return {"id": report_id, "content": report_file.read_text(encoding="utf-8")}
+
     # ---------- WebSocket: Analysis ----------
     @app.websocket("/ws/analysis")
     async def ws_analysis(websocket: WebSocket):
@@ -474,6 +684,11 @@ def _run_analysis_sync(
         config["max_debate_rounds"] = request.get("depth", 1)
         config["max_risk_discuss_rounds"] = request.get("depth", 1)
         config["output_language"] = request.get("language", "English")
+        # Per-run platform override for _execute_decision (falls back to
+        # DEFAULT_CONFIG's execution_platform, e.g. from the Step 3 broker
+        # settings, when the run didn't send one).
+        if request.get("execution_platform"):
+            config["execution_platform"] = request["execution_platform"]
 
         shared_base_url = request.get("base_url")
         deep_base_url = request.get("deep_base_url") or shared_base_url
@@ -800,7 +1015,40 @@ def _run_analysis_sync(
             checkpointed_ctx.__exit__(None, None, None)
             graph.conclude_checkpointed_run(ticker, analysis_date, asset_type.value)
 
-        send({"type": "complete", "final_state": _serialize_final_state(final_state)})
+        # Persist this run the same way propagate()/_run_graph() does for the
+        # CLI and the worker (this handler streams graph.graph directly, so
+        # none of that happens automatically -- see the comment above
+        # checkpointed_ctx). Without this, UI runs never feed the reflection
+        # loop and are lost the moment the browser closes.
+        rating = None
+        if final_state.get("final_trade_decision"):
+            rating = graph.process_signal(final_state["final_trade_decision"])
+            graph.memory_log.store_decision(
+                ticker=ticker, trade_date=analysis_date,
+                final_trade_decision=final_state["final_trade_decision"],
+            )
+            try:
+                graph.save_reports(final_state, ticker)
+            except Exception:
+                logger.warning("Failed to persist report tree for %s on %s.", ticker, analysis_date, exc_info=True)
+
+        send({
+            "type": "complete",
+            "final_state": _serialize_final_state(final_state),
+            "rating": rating,
+        })
+
+        # Optional: route the completed decision to SignalBridge, subject to
+        # both the global execute_from_ui flag and this run's own toggle --
+        # a run is analysis-only unless both agree. Never raised past this
+        # point: a broker/approval failure must not turn a successfully
+        # completed analysis into a WebSocket "error".
+        if rating and request.get("execute") and config.get("execute_from_ui", False):
+            try:
+                _execute_decision(send, config, graph, ticker, analysis_date, asset_type.value, rating)
+            except Exception as exc:
+                logger.error("Trade execution step failed for %s on %s: %s", ticker, analysis_date, exc, exc_info=True)
+                send({"type": "message", "msg_type": "System", "content": f"Trade execution failed (non-fatal): {exc}"})
 
     except Exception as exc:
         logger.error("Analysis error: %s", exc, exc_info=True)
@@ -826,6 +1074,63 @@ def _run_analysis_sync(
                     "failed_provider": getattr(parked_exc, "failed_provider", "unknown"),
                 })
         send({"type": "error", "detail": str(exc)})
+
+
+def _execute_decision(send, config: dict, graph, ticker: str, analysis_date: str, asset_type: str, rating: str) -> None:
+    """Bridge one completed UI run's decision to the execution platform.
+
+    Deliberately reuses the exact same wiring as ``app.worker.run_tick``
+    (executor/approval-gate construction, thread_id derivation, reference
+    price lookup) rather than reimplementing it, so a UI-triggered trade and
+    a worker-triggered trade go through identical sizing/risk/approval
+    logic. Sends a WS message describing the outcome; never raises (the
+    caller already wraps this, but each internal step is defensive too).
+    """
+    from tradingagents.dataflows.market_data_validator import get_reference_price
+    from tradingagents.execution import ApprovalGate, ApprovalStore, SignalBridge, create_executor
+    from tradingagents.graph.checkpointer import thread_id as compute_thread_id
+    from tradingagents.notifications.telegram_client import TelegramClient
+
+    reference_price = get_reference_price(ticker, analysis_date)
+    if reference_price is None:
+        send({
+            "type": "message", "msg_type": "System",
+            "content": f"No reference price available for {ticker} on {analysis_date}; skipping trade execution.",
+        })
+        return
+
+    platform = config.get("execution_platform", "paper")
+    executor = create_executor(platform, config=config)
+    approval_gate = ApprovalGate(
+        store=ApprovalStore(config["data_cache_dir"]),
+        notifier=TelegramClient(config.get("telegram_bot_token")) if config.get("telegram_enabled") else None,
+        chat_id=config.get("telegram_chat_id"),
+        timeout_minutes=config.get("approval_timeout_minutes", 60),
+        enabled=config.get("require_trade_approval", True),
+    )
+    bridge = SignalBridge(
+        executor, data_dir=config["data_cache_dir"], approval_gate=approval_gate, platform=platform,
+    )
+
+    sig = graph._run_signature(asset_type)
+    tid = compute_thread_id(ticker, analysis_date, sig)
+    order_result = bridge.execute_signal(
+        ticker, analysis_date, tid, rating, reference_price=reference_price, asset_type=asset_type,
+    )
+
+    if order_result is None:
+        send({"type": "message", "msg_type": "System", "content": f"No trade action for {ticker} (rating: {rating})."})
+    elif order_result.status.value == "pending_approval":
+        send({
+            "type": "approval_pending", "ticker": ticker, "side": order_result.side.value,
+            "quantity": order_result.quantity,
+        })
+    else:
+        send({
+            "type": "order_placed", "ticker": ticker, "side": order_result.side.value,
+            "quantity": order_result.quantity, "status": order_result.status.value,
+            "message": order_result.message,
+        })
 
 
 def _extract_content(message) -> str | None:

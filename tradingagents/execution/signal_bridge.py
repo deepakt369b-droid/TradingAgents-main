@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from .approval_gate import ApprovalGate
 from .base_executor import BaseExecutor
 from .idempotency import derive_client_order_id
 from .live_gate import is_kill_switch_active
@@ -51,12 +52,20 @@ class SignalBridge:
         data_dir: str,
         risk_guards: RiskGuards | None = None,
         target_pct: dict[str, float | None] | None = None,
+        approval_gate: ApprovalGate | None = None,
+        platform: str | None = None,
     ):
         self.executor = executor
         self.data_dir = data_dir
         self.risk_guards = risk_guards or RiskGuards()
         self.target_pct = {**DEFAULT_TARGET_PCT, **(target_pct or {})}
         self.ledger = OrderLedger(data_dir)
+        # None means "no approval gate at all" (always submit immediately),
+        # distinct from an ApprovalGate constructed with enabled=False --
+        # both behave the same today, but keeping the attribute optional
+        # lets a caller that never wired Telegram skip importing it.
+        self.approval_gate = approval_gate
+        self.platform = platform or type(executor).__name__
 
     def execute_signal(
         self,
@@ -151,6 +160,38 @@ class SignalBridge:
                 order_id=client_order_id, symbol=ticker, side=side,
                 status=OrderStatus.REJECTED, quantity=quantity, message=reason,
             )
+
+        # Human-in-the-loop gate, deliberately the last check before
+        # submission: only orders that already passed idempotency, sizing,
+        # and risk guards are ever surfaced for approval, so a Telegram tap
+        # only has to answer "do I want this trade," not "is this safe."
+        if self.approval_gate is not None:
+            gate_result = self.approval_gate.request(
+                approval_id=client_order_id, order=order, ticker=ticker,
+                trade_date=trade_date, thread_id=thread_id, rating=rating,
+                reference_price=reference_price, platform=self.platform,
+            )
+            if gate_result.outcome == "pending":
+                logger.info(
+                    "Order for %s on %s awaiting approval (approval_id=%s); not yet submitted.",
+                    ticker, trade_date, client_order_id,
+                )
+                return OrderResult(
+                    order_id=client_order_id, symbol=ticker, side=side,
+                    status=OrderStatus.PENDING_APPROVAL, quantity=quantity,
+                    message="Awaiting operator approval.",
+                )
+            if gate_result.outcome == "rejected":
+                logger.info(
+                    "Order for %s on %s was rejected or expired at approval (approval_id=%s).",
+                    ticker, trade_date, client_order_id,
+                )
+                return OrderResult(
+                    order_id=client_order_id, symbol=ticker, side=side,
+                    status=OrderStatus.REJECTED, quantity=quantity,
+                    message="Rejected by operator (or expired unanswered).",
+                )
+            # outcome == "approved" -- falls through to submission below.
 
         result = self.executor.place_order(order)
         self.ledger.record(

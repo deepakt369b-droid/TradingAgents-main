@@ -12,6 +12,9 @@ from .risk_guards import RiskGuards
 from .live_gate import is_kill_switch_active, is_live_trading_enabled, kill_switch_path
 from .idempotency import derive_client_order_id
 from .order_ledger import OrderLedger
+from .approval_store import ApprovalStore
+from .approval_gate import ApprovalGate, GateResult
+from .approval_resolver import resolve_pending
 from .signal_bridge import SignalBridge
 
 __all__ = [
@@ -30,5 +33,9 @@ __all__ = [
     "kill_switch_path",
     "derive_client_order_id",
     "OrderLedger",
+    "ApprovalStore",
+    "ApprovalGate",
+    "GateResult",
+    "resolve_pending",
     "SignalBridge",
 ]

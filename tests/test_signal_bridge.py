@@ -6,6 +6,8 @@ not a mock.
 
 import pytest
 
+from tradingagents.execution.approval_gate import ApprovalGate
+from tradingagents.execution.approval_store import ApprovalStore
 from tradingagents.execution.live_gate import kill_switch_path
 from tradingagents.execution.order_models import OrderSide, OrderStatus
 from tradingagents.execution.paper_executor import PaperExecutor
@@ -130,3 +132,57 @@ class TestSignalBridgeSafety:
         result = bridge.execute_signal("AAPL", "2026-04-20", "thread-1", "Buy", reference_price=150.0)
         assert result.status == OrderStatus.REJECTED
         assert "blacklisted" in result.message.lower()
+
+
+@pytest.mark.unit
+class TestSignalBridgeApprovalGate:
+    def test_no_gate_submits_immediately(self, tmp_path):
+        """Default (no approval_gate passed) behaves exactly like before
+        approval existed -- a risk-checked order submits right away."""
+        executor = PaperExecutor(initial_cash=100000.0, data_dir=tmp_path)
+        bridge = SignalBridge(executor, data_dir=tmp_path)
+        result = bridge.execute_signal("AAPL", "2026-04-20", "thread-1", "Buy", reference_price=150.0)
+        assert result.status == OrderStatus.FILLED
+
+    def test_enabled_gate_defers_order_and_writes_no_ledger_entry(self, tmp_path):
+        executor = PaperExecutor(initial_cash=100000.0, data_dir=tmp_path)
+        gate = ApprovalGate(ApprovalStore(tmp_path), enabled=True)
+        bridge = SignalBridge(executor, data_dir=tmp_path, approval_gate=gate, platform="paper")
+
+        result = bridge.execute_signal("AAPL", "2026-04-20", "thread-1", "Buy", reference_price=150.0)
+        assert result.status == OrderStatus.PENDING_APPROVAL
+        assert executor.get_positions() == []
+        from tradingagents.execution.order_ledger import OrderLedger
+        assert OrderLedger(tmp_path).get(result.order_id) is None
+
+    def test_gate_only_asked_after_risk_guards_pass(self, tmp_path):
+        """A risk-guard rejection must never reach the approval gate at
+        all -- an operator should only ever be asked about orders that
+        already passed every automated safety check."""
+        executor = PaperExecutor(initial_cash=100000.0, data_dir=tmp_path)
+        guards = RiskGuards(blacklisted_symbols=["AAPL"])
+        store = ApprovalStore(tmp_path)
+        gate = ApprovalGate(store, enabled=True)
+        bridge = SignalBridge(executor, data_dir=tmp_path, risk_guards=guards, approval_gate=gate, platform="paper")
+
+        result = bridge.execute_signal("AAPL", "2026-04-20", "thread-1", "Buy", reference_price=150.0)
+        assert result.status == OrderStatus.REJECTED
+        assert store.list_pending() == []
+
+    def test_disabled_gate_submits_like_no_gate(self, tmp_path):
+        executor = PaperExecutor(initial_cash=100000.0, data_dir=tmp_path)
+        gate = ApprovalGate(ApprovalStore(tmp_path), enabled=False)
+        bridge = SignalBridge(executor, data_dir=tmp_path, approval_gate=gate, platform="paper")
+
+        result = bridge.execute_signal("AAPL", "2026-04-20", "thread-1", "Buy", reference_price=150.0)
+        assert result.status == OrderStatus.FILLED
+
+    def test_kill_switch_still_blocks_before_approval_gate(self, tmp_path):
+        executor = PaperExecutor(initial_cash=100000.0, data_dir=tmp_path)
+        gate = ApprovalGate(ApprovalStore(tmp_path), enabled=True)
+        bridge = SignalBridge(executor, data_dir=tmp_path, approval_gate=gate, platform="paper")
+        kill_switch_path(tmp_path).touch()
+
+        result = bridge.execute_signal("AAPL", "2026-04-20", "thread-1", "Buy", reference_price=150.0)
+        assert result is None
+        assert ApprovalStore(tmp_path).list_pending() == []

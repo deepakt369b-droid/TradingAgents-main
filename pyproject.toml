@@ -66,8 +66,13 @@ build = [
 ]
 # Live/paper broker execution (tradingagents/execution/). Optional so the
 # core install stays lean -- most users only need the research pipeline.
-# ib_insync/IBKR is deliberately NOT included: it requires a persistent
-# TWS/IB Gateway process, out of scope for a lean Coolify deployment.
+# ib_insync (imported by ibkr_executor.py) is deliberately NOT included by
+# default: it requires a persistent TWS/IB Gateway process running
+# alongside the app, which a Coolify/container deployment doesn't have.
+# If you run IBKR, install it yourself: `pip install ib_insync` (archived
+# but still the package ibkr_executor.py imports) or migrate that file to
+# `ib_async` (its maintained BSD-2 successor, `pip install ib_async`) --
+# either way TWS/IB Gateway must be reachable at IBKR_HOST:IBKR_PORT.
 exec = [
     "ccxt>=4.4.0",
     "alpaca-py>=0.35.0",
@@ -85,6 +90,7 @@ worker = [
 tradingagents = "cli.main:app"
 tradingagents-desktop = "app.launcher:main"
 tradingagents-worker = "app.worker:main"
+tradingagents-telegram-poll = "app.telegram_poll:main"
 
 [tool.setuptools.packages.find]
 include = ["tradingagents*", "cli*", "app*"]

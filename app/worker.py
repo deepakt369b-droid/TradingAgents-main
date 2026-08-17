@@ -75,11 +75,12 @@ def run_tick(config: dict, watchlist: list[str], trade_date: str | None = None) 
     one of "ok", "parked", "no_price", "error:<ExceptionType>".
     """
     from cli.utils import detect_asset_type
-    from tradingagents.execution import SignalBridge, create_executor
+    from tradingagents.execution import ApprovalGate, ApprovalStore, SignalBridge, create_executor
     from tradingagents.dataflows.market_data_validator import get_reference_price
     from tradingagents.graph.checkpointer import thread_id as compute_thread_id
     from tradingagents.graph.trading_graph import TradingAgentsGraph
     from tradingagents.llm_clients.llm_errors import RunParkedError
+    from tradingagents.notifications.telegram_client import TelegramClient
 
     trade_date = trade_date or date.today().isoformat()
     outcomes: dict[str, str] = {}
@@ -88,8 +89,18 @@ def run_tick(config: dict, watchlist: list[str], trade_date: str | None = None) 
         logger.warning("Watchlist is empty (TRADINGAGENTS_WATCHLIST unset) -- nothing to do.")
         return outcomes
 
-    executor = create_executor(config.get("execution_platform", "paper"), config=config)
-    bridge = SignalBridge(executor, data_dir=config["data_cache_dir"])
+    platform = config.get("execution_platform", "paper")
+    executor = create_executor(platform, config=config)
+    approval_gate = ApprovalGate(
+        store=ApprovalStore(config["data_cache_dir"]),
+        notifier=TelegramClient(config.get("telegram_bot_token")) if config.get("telegram_enabled") else None,
+        chat_id=config.get("telegram_chat_id"),
+        timeout_minutes=config.get("approval_timeout_minutes", 60),
+        enabled=config.get("require_trade_approval", True),
+    )
+    bridge = SignalBridge(
+        executor, data_dir=config["data_cache_dir"], approval_gate=approval_gate, platform=platform,
+    )
 
     from tradingagents.integrations import AITraderClient
     ai_trader = AITraderClient(
@@ -150,6 +161,22 @@ def _touch_heartbeat(data_dir: str) -> None:
     path.write_text(datetime.now().isoformat(), encoding="utf-8")
 
 
+def _resolve_pending_tick() -> None:
+    """Expire overdue approvals and submit every APPROVED proposal.
+
+    Runs far more often than the analysis tick (see the 30s interval job in
+    ``main()``) since it's cheap (no LLM calls) and the whole point of
+    human-in-the-loop approval is that a tap should reach the broker
+    promptly, not wait for tomorrow's scheduled run.
+    """
+    from tradingagents.execution import resolve_pending
+
+    config = build_worker_config()
+    counts = resolve_pending(config)
+    if any(counts.values()):
+        logger.info("Approval resolver: %s", counts)
+
+
 def _scheduled_tick() -> None:
     config = build_worker_config()
     today = date.today()
@@ -175,10 +202,12 @@ def main() -> None:
 
     if args.once:
         _scheduled_tick()
+        _resolve_pending_tick()
         return
 
     from apscheduler.schedulers.blocking import BlockingScheduler
     from apscheduler.triggers.cron import CronTrigger
+    from apscheduler.triggers.interval import IntervalTrigger
 
     # Default: once daily shortly after the US market close (21:00 UTC ~=
     # 4-5pm ET depending on DST), so the day's OHLCV is settled. Override
@@ -189,6 +218,15 @@ def main() -> None:
 
     scheduler = BlockingScheduler(timezone="UTC")
     scheduler.add_job(_scheduled_tick, trigger, id="tradingagents_tick", misfire_grace_time=3600)
+    # Separate, much shorter-interval job: turns an approved proposal into
+    # an actual order promptly instead of waiting for tomorrow's analysis
+    # tick. misfire_grace_time is short here on purpose -- if a tick was
+    # missed, the next one 30s later supersedes it; there's no value in a
+    # scheduler catching up on stale resolve attempts.
+    scheduler.add_job(
+        _resolve_pending_tick, IntervalTrigger(seconds=30),
+        id="tradingagents_approval_resolver", misfire_grace_time=30,
+    )
     logger.info("Worker started; next run schedule: %s", cron_expr)
     scheduler.start()
 

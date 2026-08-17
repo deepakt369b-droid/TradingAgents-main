@@ -334,6 +334,14 @@
             ccxt_exchange: $('#ccxt-exchange').value,
             ccxt_api_key: $('#ccxt-api-key').value.trim(),
             ccxt_secret_key: $('#ccxt-secret-key').value.trim(),
+            require_trade_approval: $('#require-trade-approval').checked,
+            approval_timeout_minutes: $('#approval-timeout-minutes').value.trim(),
+            execute_from_ui: $('#execute-from-ui').checked,
+            telegram_enabled: $('#telegram-enabled').checked,
+            telegram_bot_token: $('#telegram-bot-token').value.trim(),
+            telegram_chat_id: $('#telegram-chat-id').value.trim(),
+            telegram_allowed_chat_ids: $('#telegram-allowed-chat-ids').value.trim(),
+            telegram_webhook_secret: $('#telegram-webhook-secret').value.trim(),
           };
 
           const resp = await fetch('/api/save-production-config', {
@@ -404,6 +412,165 @@
     const btnSaveKey = $('#btn-save-key');
     if (btnSaveKey) {
       btnSaveKey.addEventListener('click', saveApiKey);
+    }
+
+    // Trading view navigation
+    const btnHeaderTrading = $('#btn-header-trading');
+    if (btnHeaderTrading) btnHeaderTrading.addEventListener('click', openTradingView);
+    const btnViewTrading = $('#btn-view-trading');
+    if (btnViewTrading) btnViewTrading.addEventListener('click', openTradingView);
+    const btnTradingBack = $('#btn-trading-back');
+    if (btnTradingBack) {
+      btnTradingBack.addEventListener('click', () => switchView(state.lastTicker ? 'results' : 'config'));
+    }
+
+    // Telegram test message
+    const btnTelegramTest = $('#btn-telegram-test');
+    if (btnTelegramTest) {
+      btnTelegramTest.addEventListener('click', async () => {
+        btnTelegramTest.disabled = true;
+        btnTelegramTest.textContent = 'Sending...';
+        try {
+          const resp = await fetch('/api/telegram/test', { method: 'POST' });
+          const data = await resp.json();
+          showToast(data.message || (data.success ? 'Sent.' : 'Failed.'), data.success ? 'success' : 'error');
+        } catch (e) {
+          showToast(`Test failed: ${e.message}`, 'error');
+        } finally {
+          btnTelegramTest.disabled = false;
+          btnTelegramTest.textContent = 'Send Test Message';
+        }
+      });
+    }
+
+    // Kill switch toggle
+    const btnKillSwitch = $('#btn-toggle-kill-switch');
+    if (btnKillSwitch) {
+      btnKillSwitch.addEventListener('click', async () => {
+        const active = btnKillSwitch.dataset.active === 'true';
+        try {
+          const resp = await fetch('/api/kill-switch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ active: !active }),
+          });
+          const data = await resp.json();
+          renderKillSwitch(data.active);
+          showToast(data.active ? '🛑 Kill switch activated.' : '✅ Kill switch cleared.', data.active ? 'warning' : 'success');
+        } catch (e) {
+          showToast(`Failed to toggle kill switch: ${e.message}`, 'error');
+        }
+      });
+    }
+  }
+
+  // ---------- Trading View ----------
+  function openTradingView() {
+    switchView('trading');
+    loadTradingView();
+  }
+
+  function renderKillSwitch(active) {
+    const btn = $('#btn-toggle-kill-switch');
+    if (!btn) return;
+    btn.dataset.active = String(active);
+    btn.textContent = active ? '🛑 Active -- click to resume' : '✅ Clear -- click to halt';
+  }
+
+  async function loadTradingView() {
+    try {
+      const statusResp = await fetch('/api/trading/status');
+      const status = await statusResp.json();
+      $('#trading-status-line').textContent =
+        `Platform: ${status.platform} • ${status.live_trading_enabled ? 'LIVE' : 'paper/sandbox'} • ` +
+        `Approval required: ${status.require_trade_approval ? 'yes' : 'no'}`;
+      renderKillSwitch(status.kill_switch_active);
+      renderPositions(status.positions, status.account, status.account_error);
+    } catch (e) {
+      $('#trading-status-line').textContent = 'Failed to load trading status.';
+    }
+
+    try {
+      const approvalsResp = await fetch('/api/approvals');
+      const approvals = await approvalsResp.json();
+      renderApprovals(approvals.pending, '#pending-approvals-list', true);
+      renderApprovals(approvals.recent, '#recent-approvals-list', false);
+    } catch (e) {
+      $('#pending-approvals-list').innerHTML = '<div class="report-placeholder">Failed to load approvals.</div>';
+    }
+  }
+
+  function renderPositions(positions, account, accountError) {
+    const container = $('#positions-list');
+    if (accountError) {
+      container.innerHTML = `<div class="report-placeholder">Could not fetch account/positions: ${escapeHtml(accountError)}</div>`;
+      return;
+    }
+    let html = '';
+    if (account) {
+      html += `<div class="approval-row"><span>Cash</span><span>$${Number(account.cash).toFixed(2)}</span></div>`;
+      html += `<div class="approval-row"><span>Portfolio Value</span><span>$${Number(account.portfolio_value).toFixed(2)}</span></div>`;
+    }
+    if (!positions || positions.length === 0) {
+      html += '<div class="report-placeholder">No open positions.</div>';
+    } else {
+      positions.forEach(p => {
+        html += `
+          <div class="position-row">
+            <span>${escapeHtml(p.symbol)}</span>
+            <span>${Number(p.quantity).toFixed(4)} @ $${Number(p.average_entry_price).toFixed(2)}</span>
+            <span>${Number(p.unrealized_pnl) >= 0 ? '+' : ''}${Number(p.unrealized_pnl).toFixed(2)}</span>
+          </div>`;
+      });
+    }
+    container.innerHTML = html;
+  }
+
+  function renderApprovals(rows, selector, actionable) {
+    const container = $(selector);
+    if (!rows || rows.length === 0) {
+      container.innerHTML = '<div class="report-placeholder">Nothing here yet.</div>';
+      return;
+    }
+    container.innerHTML = rows.map(row => `
+      <div class="approval-row">
+        <div class="approval-row-info">
+          <strong>${escapeHtml(row.ticker)} ${escapeHtml((row.side || '').toUpperCase())} ${Number(row.quantity).toFixed(4)}</strong>
+          <span class="field-hint">rating: ${escapeHtml(row.rating)} • platform: ${escapeHtml(row.platform)} • ref: $${Number(row.reference_price).toFixed(2)}</span>
+        </div>
+        ${actionable
+          ? `<div class="approval-row-actions">
+               <button class="btn-approve" data-id="${escapeHtml(row.approval_id)}" data-decision="approve">Approve</button>
+               <button class="btn-reject" data-id="${escapeHtml(row.approval_id)}" data-decision="reject">Reject</button>
+             </div>`
+          : `<span class="badge-status ${escapeHtml(row.status)}">${escapeHtml(row.status)}</span>`
+        }
+      </div>
+    `).join('');
+
+    if (actionable) {
+      container.querySelectorAll('button[data-decision]').forEach(btn => {
+        btn.addEventListener('click', () => decideApproval(btn.dataset.id, btn.dataset.decision));
+      });
+    }
+  }
+
+  async function decideApproval(approvalId, decision) {
+    try {
+      const resp = await fetch(`/api/approvals/${encodeURIComponent(approvalId)}/decide`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision }),
+      });
+      const data = await resp.json();
+      if (data.success) {
+        showToast(decision === 'approve' ? 'Approved -- submitting shortly.' : 'Rejected.', 'success');
+      } else {
+        showToast(data.message || 'Decision failed.', 'error');
+      }
+      loadTradingView();
+    } catch (e) {
+      showToast(`Decision failed: ${e.message}`, 'error');
     }
   }
 
@@ -596,6 +763,11 @@
       quick_base_url: quickSplit ? ($('#quick-base-url').value.trim() || null) : null,
       quick_api_key: quickSplit ? ($('#quick-api-key').value.trim() || null) : null,
       quick_thinking_config: quickSplit ? ($('#quick-thinking-config').value || null) : null,
+      // Trade execution: off unless the run's own toggle is checked. The
+      // platform selected here also drives DEFAULT_CONFIG['execution_platform']
+      // for this run via /ws/analysis's request handling.
+      execute: $('#run-execute-toggle') ? $('#run-execute-toggle').checked : false,
+      execution_platform: $('#run-exec-platform') ? $('#run-exec-platform').value : 'paper',
     };
 
     const tickerStr = ticker.toUpperCase();
@@ -783,7 +955,15 @@
         break;
 
       case 'complete':
-        onAnalysisComplete(msg.final_state);
+        onAnalysisComplete(msg.final_state, msg.rating);
+        break;
+
+      case 'approval_pending':
+        showExecutionOutcome('pending', `⏳ ${msg.ticker} ${msg.side.toUpperCase()} ${msg.quantity.toFixed(4)} -- awaiting your approval (Telegram or the Trading tab).`);
+        break;
+
+      case 'order_placed':
+        showExecutionOutcome('placed', `✅ ${msg.ticker} ${msg.side.toUpperCase()} ${msg.quantity.toFixed(4)} -- ${msg.status} (${msg.message || ''})`);
         break;
 
       case 'error':
@@ -892,7 +1072,7 @@
   }
 
   // ---------- Analysis Complete ----------
-  function onAnalysisComplete(finalState) {
+  function onAnalysisComplete(finalState, rating) {
     state.analysisRunning = false;
     state.finalState = finalState;
     clearInterval(state.timerInterval);
@@ -906,21 +1086,26 @@
     showToast('Analysis completed successfully!', 'success');
 
     // After a short delay, switch to results
-    setTimeout(() => showResults(finalState), 1500);
+    setTimeout(() => showResults(finalState, rating), 1500);
   }
 
-  function showResults(finalState) {
+  function showResults(finalState, rating) {
     // Set header
     const ticker = $('#ticker').value.trim().toUpperCase();
     const date = $('#analysis-date').value;
     $('#results-ticker-date').textContent = `${ticker} • ${date}`;
 
-    // Extract decision
-    const decision = extractDecision(finalState);
+    // Extract decision. Prefer the pipeline's actual 5-tier rating
+    // (agents/utils/rating.py, sent as msg.rating on the 'complete'
+    // message) over guessing from report text -- see extractDecision's
+    // docstring for why the text-guessing fallback exists at all.
+    const decision = extractDecision(finalState, rating);
     const actionEl = $('#decision-action');
-    actionEl.textContent = decision.action;
-    actionEl.className = `decision-action ${decision.action.toLowerCase()}`;
+    actionEl.textContent = decision.label;
+    actionEl.className = `decision-action ${decision.cssClass}`;
     $('#decision-summary').textContent = decision.summary;
+    $('#execution-outcome').classList.add('hidden');
+    $('#execution-outcome').textContent = '';
 
     // Build report accordion
     renderResultsReport();
@@ -928,11 +1113,36 @@
     switchView('results');
   }
 
-  function extractDecision(finalState) {
-    // Try to parse the final trade decision for action
+  function showExecutionOutcome(kind, text) {
+    const el = $('#execution-outcome');
+    if (!el) return;
+    el.textContent = text;
+    el.className = `execution-outcome ${kind}`;
+    el.classList.remove('hidden');
+  }
+
+  // Maps the pipeline's 5-tier rating (agents/utils/rating.py:RATINGS_5_TIER)
+  // onto the existing 3-way badge styling (.decision-action.buy/.hold/.sell).
+  const RATING_CSS_CLASS = {
+    Buy: 'buy', Overweight: 'buy',
+    Hold: 'hold',
+    Underweight: 'sell', Sell: 'sell',
+  };
+
+  function extractDecision(finalState, rating) {
     const fd = finalState?.final_trade_decision || finalState?.risk_debate_state?.judge_decision || '';
     const text = typeof fd === 'string' ? fd : JSON.stringify(fd);
 
+    // Extract first paragraph as summary (unchanged regardless of rating source)
+    const lines = text.split('\n').filter(l => l.trim().length > 20);
+    const summary = lines[0] ? truncate(lines[0].replace(/^#+\s*/, ''), 300) : 'Analysis complete. See detailed report below.';
+
+    if (rating && RATING_CSS_CLASS[rating]) {
+      return { label: rating.toUpperCase(), cssClass: RATING_CSS_CLASS[rating], summary };
+    }
+
+    // Fallback only: the server should always send a rating on 'complete'.
+    // This substring guess is a last resort for an older/mismatched server.
     let action = 'HOLD';
     const lower = text.toLowerCase();
     if (lower.includes('"buy"') || lower.includes('action: buy') || lower.includes('decision: buy')) {
@@ -940,12 +1150,7 @@
     } else if (lower.includes('"sell"') || lower.includes('action: sell') || lower.includes('decision: sell')) {
       action = 'SELL';
     }
-
-    // Extract first paragraph as summary
-    const lines = text.split('\n').filter(l => l.trim().length > 20);
-    const summary = lines[0] ? truncate(lines[0].replace(/^#+\s*/, ''), 300) : 'Analysis complete. See detailed report below.';
-
-    return { action, summary };
+    return { label: action, cssClass: action.toLowerCase(), summary };
   }
 
   function renderResultsReport() {
